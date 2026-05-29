@@ -9,6 +9,8 @@ FetchContent_MakeAvailable(Catch2)
 
 add_executable(brewc_tests
     test_smoke.cpp
+    test_lexer.cpp
+    ${CMAKE_SOURCE_DIR}/src/lexer.cpp
 )
 
 target_link_libraries(brewc_tests PRIVATE Catch2::Catch2WithMain)
