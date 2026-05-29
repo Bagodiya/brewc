@@ -16,7 +16,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-add_executable(brewc src/main.cpp)
+add_executable(brewc
+    src/main.cpp
+    src/lexer.cpp
+)
 target_include_directories(brewc PRIVATE include)
 
 enable_testing()
