@@ -186,6 +186,65 @@ TEST_CASE("operator lexeme holds the actual character", "[lexer]") {
     REQUIRE(t.lexeme == "*");
 }
 
+TEST_CASE("lexer scans the two-character operators", "[lexer]") {
+    Lexer lex("== != <= >= && ||");
+
+    REQUIRE(lex.next_token().kind == TokenKind::EqualEqual);
+    REQUIRE(lex.next_token().kind == TokenKind::BangEqual);
+    REQUIRE(lex.next_token().kind == TokenKind::LessEqual);
+    REQUIRE(lex.next_token().kind == TokenKind::GreaterEqual);
+    REQUIRE(lex.next_token().kind == TokenKind::AmpAmp);
+    REQUIRE(lex.next_token().kind == TokenKind::PipePipe);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("single = < > ! fall back to one-char tokens", "[lexer]") {
+    Lexer lex("= < > !");
+
+    REQUIRE(lex.next_token().kind == TokenKind::Equal);
+    REQUIRE(lex.next_token().kind == TokenKind::Less);
+    REQUIRE(lex.next_token().kind == TokenKind::Greater);
+    REQUIRE(lex.next_token().kind == TokenKind::Bang);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("two-char operator lexeme keeps both characters", "[lexer]") {
+    Lexer lex("<=");
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::LessEqual);
+    REQUIRE(t.lexeme == "<=");
+}
+
+TEST_CASE("a lone & or | is an error", "[lexer]") {
+    // we don't have bitwise operators, so a single & by itself is junk
+    Lexer amp("&");
+    REQUIRE(amp.next_token().kind == TokenKind::Error);
+
+    Lexer pipe("|");
+    REQUIRE(pipe.next_token().kind == TokenKind::Error);
+}
+
+TEST_CASE("comparison glued to operands still splits apart", "[lexer]") {
+    Lexer lex("a==b");
+
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::EqualEqual);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("assignment next to comparison reads correctly", "[lexer]") {
+    // "x = y == z" mixes a single = with a double ==
+    Lexer lex("x = y == z");
+
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::Equal);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::EqualEqual);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
 TEST_CASE("a small call-like sequence tokenizes cleanly", "[lexer]") {
     Lexer lex("foo(a, b)");
 

@@ -106,11 +106,13 @@ Token Lexer::next_token() {
         return Token(kind, std::string(word), start_line, start_col);
     }
 
-    // single-char operators and punctuation. the two-char ones (==, <=, &&
-    // and friends) come later, so for now just match one char at a time.
+    // operators and punctuation. some of these can be two chars long (== <=
+    // && ...), so after grabbing the first char we look at the next one and
+    // glue them together when it matches.
     char c = advance();
     auto make = [&](TokenKind kind) {
-        return Token(kind, std::string(source_.substr(start, 1)), start_line, start_col);
+        std::size_t len = pos_ - start;
+        return Token(kind, std::string(source_.substr(start, len)), start_line, start_col);
     };
 
     switch (c) {
@@ -125,6 +127,43 @@ Token Lexer::next_token() {
     case '}': return make(TokenKind::RBrace);
     case ',': return make(TokenKind::Comma);
     case ';': return make(TokenKind::Semicolon);
+    case '=':
+        if (peek() == '=') {
+            advance();
+            return make(TokenKind::EqualEqual);
+        }
+        return make(TokenKind::Equal);
+    case '!':
+        if (peek() == '=') {
+            advance();
+            return make(TokenKind::BangEqual);
+        }
+        return make(TokenKind::Bang);
+    case '<':
+        if (peek() == '=') {
+            advance();
+            return make(TokenKind::LessEqual);
+        }
+        return make(TokenKind::Less);
+    case '>':
+        if (peek() == '=') {
+            advance();
+            return make(TokenKind::GreaterEqual);
+        }
+        return make(TokenKind::Greater);
+    case '&':
+        // only && is valid, a lone & falls through to the error below
+        if (peek() == '&') {
+            advance();
+            return make(TokenKind::AmpAmp);
+        }
+        break;
+    case '|':
+        if (peek() == '|') {
+            advance();
+            return make(TokenKind::PipePipe);
+        }
+        break;
     default:
         break;
     }
