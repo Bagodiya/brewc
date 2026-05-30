@@ -26,6 +26,13 @@ char Lexer::peek() const {
     return source_[pos_];
 }
 
+char Lexer::peek_next() const {
+    if (pos_ + 1 >= source_.size()) {
+        return '\0';
+    }
+    return source_[pos_ + 1];
+}
+
 char Lexer::advance() {
     char c = source_[pos_];
     pos_++;
@@ -50,8 +57,21 @@ Token Lexer::next_token() {
         while (!is_at_end() && is_digit(peek())) {
             advance();
         }
+
+        // only treat the dot as part of a number when there's another digit
+        // after it, otherwise "1." should stay an integer and leave the dot.
+        bool is_float = false;
+        if (peek() == '.' && is_digit(peek_next())) {
+            is_float = true;
+            advance(); // eat the '.'
+            while (!is_at_end() && is_digit(peek())) {
+                advance();
+            }
+        }
+
         std::string text(source_.substr(start, pos_ - start));
-        return Token(TokenKind::Integer, std::move(text), start_line, start_col);
+        TokenKind kind = is_float ? TokenKind::Float : TokenKind::Integer;
+        return Token(kind, std::move(text), start_line, start_col);
     }
 
     // we don't recognise this char yet, eat it and report an error so the

@@ -17,6 +17,7 @@ public:
 
 private:
     char peek() const;
+    char peek_next() const;
     char advance();
     bool is_at_end() const;
 
