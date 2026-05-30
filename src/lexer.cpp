@@ -106,9 +106,31 @@ Token Lexer::next_token() {
         return Token(kind, std::string(word), start_line, start_col);
     }
 
-    // we don't recognise this char yet, eat it and report an error so the
-    // caller doesn't get stuck on the same position forever.
-    advance();
+    // single-char operators and punctuation. the two-char ones (==, <=, &&
+    // and friends) come later, so for now just match one char at a time.
+    char c = advance();
+    auto make = [&](TokenKind kind) {
+        return Token(kind, std::string(source_.substr(start, 1)), start_line, start_col);
+    };
+
+    switch (c) {
+    case '+': return make(TokenKind::Plus);
+    case '-': return make(TokenKind::Minus);
+    case '*': return make(TokenKind::Star);
+    case '/': return make(TokenKind::Slash);
+    case '%': return make(TokenKind::Percent);
+    case '(': return make(TokenKind::LParen);
+    case ')': return make(TokenKind::RParen);
+    case '{': return make(TokenKind::LBrace);
+    case '}': return make(TokenKind::RBrace);
+    case ',': return make(TokenKind::Comma);
+    case ';': return make(TokenKind::Semicolon);
+    default:
+        break;
+    }
+
+    // nothing matched, hand back an error token for this char so the caller
+    // doesn't get stuck on the same position forever.
     std::string bad(source_.substr(start, 1));
     return Token(TokenKind::Error, std::move(bad), start_line, start_col);
 }

@@ -140,3 +140,60 @@ TEST_CASE("a name that starts with a digit is not an identifier", "[lexer]") {
     REQUIRE(name.kind == TokenKind::Identifier);
     REQUIRE(name.lexeme == "nd");
 }
+
+TEST_CASE("lexer scans the arithmetic operators", "[lexer]") {
+    Lexer lex("+ - * / %");
+
+    REQUIRE(lex.next_token().kind == TokenKind::Plus);
+    REQUIRE(lex.next_token().kind == TokenKind::Minus);
+    REQUIRE(lex.next_token().kind == TokenKind::Star);
+    REQUIRE(lex.next_token().kind == TokenKind::Slash);
+    REQUIRE(lex.next_token().kind == TokenKind::Percent);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("lexer scans punctuation", "[lexer]") {
+    Lexer lex("( ) { } , ;");
+
+    REQUIRE(lex.next_token().kind == TokenKind::LParen);
+    REQUIRE(lex.next_token().kind == TokenKind::RParen);
+    REQUIRE(lex.next_token().kind == TokenKind::LBrace);
+    REQUIRE(lex.next_token().kind == TokenKind::RBrace);
+    REQUIRE(lex.next_token().kind == TokenKind::Comma);
+    REQUIRE(lex.next_token().kind == TokenKind::Semicolon);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("operators glued to numbers still split apart", "[lexer]") {
+    // no spaces here, the lexer should still pull out each piece
+    Lexer lex("1+2");
+
+    Token one = lex.next_token();
+    REQUIRE(one.kind == TokenKind::Integer);
+    REQUIRE(one.lexeme == "1");
+
+    REQUIRE(lex.next_token().kind == TokenKind::Plus);
+
+    Token two = lex.next_token();
+    REQUIRE(two.kind == TokenKind::Integer);
+    REQUIRE(two.lexeme == "2");
+}
+
+TEST_CASE("operator lexeme holds the actual character", "[lexer]") {
+    Lexer lex("*");
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::Star);
+    REQUIRE(t.lexeme == "*");
+}
+
+TEST_CASE("a small call-like sequence tokenizes cleanly", "[lexer]") {
+    Lexer lex("foo(a, b)");
+
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::LParen);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::Comma);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::RParen);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
