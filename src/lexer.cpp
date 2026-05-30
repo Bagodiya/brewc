@@ -10,6 +10,28 @@ bool is_digit(char c) {
 bool is_space(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
+
+bool is_alpha(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+bool is_alnum(char c) {
+    return is_alpha(c) || is_digit(c);
+}
+
+// map a finished word to its keyword token, or Identifier if it's just a name
+TokenKind keyword_or_identifier(std::string_view word) {
+    if (word == "let") return TokenKind::Let;
+    if (word == "fn") return TokenKind::Fn;
+    if (word == "if") return TokenKind::If;
+    if (word == "else") return TokenKind::Else;
+    if (word == "while") return TokenKind::While;
+    if (word == "return") return TokenKind::Return;
+    if (word == "true") return TokenKind::True;
+    if (word == "false") return TokenKind::False;
+    if (word == "nil") return TokenKind::Nil;
+    return TokenKind::Identifier;
+}
 } // namespace
 
 Lexer::Lexer(std::string_view source)
@@ -72,6 +94,16 @@ Token Lexer::next_token() {
         std::string text(source_.substr(start, pos_ - start));
         TokenKind kind = is_float ? TokenKind::Float : TokenKind::Integer;
         return Token(kind, std::move(text), start_line, start_col);
+    }
+
+    if (is_alpha(peek())) {
+        while (!is_at_end() && is_alnum(peek())) {
+            advance();
+        }
+
+        std::string_view word = source_.substr(start, pos_ - start);
+        TokenKind kind = keyword_or_identifier(word);
+        return Token(kind, std::string(word), start_line, start_col);
     }
 
     // we don't recognise this char yet, eat it and report an error so the
