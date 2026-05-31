@@ -245,6 +245,54 @@ TEST_CASE("assignment next to comparison reads correctly", "[lexer]") {
     REQUIRE(lex.next_token().kind == TokenKind::End);
 }
 
+TEST_CASE("lexer scans a plain string", "[lexer]") {
+    Lexer lex("\"hello\"");
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::String);
+    REQUIRE(t.lexeme == "hello");
+
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("string escapes are turned into real characters", "[lexer]") {
+    // \n and \t should become an actual newline and tab in the value
+    Lexer lex("\"a\\nb\\tc\"");
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::String);
+    REQUIRE(t.lexeme == "a\nb\tc");
+}
+
+TEST_CASE("escaped quote and backslash stay inside the string", "[lexer]") {
+    // the string is:  say "hi" \  (a quote pair and a trailing backslash)
+    Lexer lex("\"say \\\"hi\\\" \\\\\"");
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::String);
+    REQUIRE(t.lexeme == "say \"hi\" \\");
+}
+
+TEST_CASE("empty string is valid", "[lexer]") {
+    Lexer lex("\"\"");
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::String);
+    REQUIRE(t.lexeme == "");
+
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("a string sitting between other tokens", "[lexer]") {
+    Lexer lex("let s = \"yo\"");
+
+    REQUIRE(lex.next_token().kind == TokenKind::Let);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::Equal);
+
+    Token str = lex.next_token();
+    REQUIRE(str.kind == TokenKind::String);
+    REQUIRE(str.lexeme == "yo");
+
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
 TEST_CASE("a small call-like sequence tokenizes cleanly", "[lexer]") {
     Lexer lex("foo(a, b)");
 

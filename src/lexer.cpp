@@ -106,6 +106,32 @@ Token Lexer::next_token() {
         return Token(kind, std::string(word), start_line, start_col);
     }
 
+    if (peek() == '"') {
+        advance(); // skip the opening quote
+
+        // build up the actual text as we go so the lexeme we hand back is the
+        // real string value, not the raw source with the backslashes still in
+        std::string value;
+        while (!is_at_end() && peek() != '"') {
+            char ch = advance();
+            if (ch == '\\' && !is_at_end()) {
+                char esc = advance();
+                switch (esc) {
+                case 'n': value.push_back('\n'); break;
+                case 't': value.push_back('\t'); break;
+                case '\\': value.push_back('\\'); break;
+                case '"': value.push_back('"'); break;
+                default: value.push_back(esc); break; // leave unknown escapes alone
+                }
+            } else {
+                value.push_back(ch);
+            }
+        }
+
+        advance(); // eat the closing quote
+        return Token(TokenKind::String, std::move(value), start_line, start_col);
+    }
+
     // operators and punctuation. some of these can be two chars long (== <=
     // && ...), so after grabbing the first char we look at the next one and
     // glue them together when it matches.
