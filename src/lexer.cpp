@@ -58,7 +58,14 @@ char Lexer::peek_next() const {
 char Lexer::advance() {
     char c = source_[pos_];
     pos_++;
-    column_++;
+    // a newline moves us down a line and back to the first column, every
+    // other char just bumps the column over by one
+    if (c == '\n') {
+        line_++;
+        column_ = 1;
+    } else {
+        column_++;
+    }
     return c;
 }
 

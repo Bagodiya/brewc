@@ -304,3 +304,57 @@ TEST_CASE("a small call-like sequence tokenizes cleanly", "[lexer]") {
     REQUIRE(lex.next_token().kind == TokenKind::RParen);
     REQUIRE(lex.next_token().kind == TokenKind::End);
 }
+
+TEST_CASE("first token starts at line 1 column 1", "[lexer]") {
+    Lexer lex("x");
+    Token t = lex.next_token();
+    REQUIRE(t.line == 1);
+    REQUIRE(t.column == 1);
+}
+
+TEST_CASE("column advances along a single line", "[lexer]") {
+    // "a b" -> a at col 1, b at col 3 (the space takes up col 2)
+    Lexer lex("a b");
+
+    Token a = lex.next_token();
+    REQUIRE(a.line == 1);
+    REQUIRE(a.column == 1);
+
+    Token b = lex.next_token();
+    REQUIRE(b.line == 1);
+    REQUIRE(b.column == 3);
+}
+
+TEST_CASE("a newline bumps the line and resets the column", "[lexer]") {
+    Lexer lex("a\nb");
+
+    Token a = lex.next_token();
+    REQUIRE(a.line == 1);
+    REQUIRE(a.column == 1);
+
+    Token b = lex.next_token();
+    REQUIRE(b.line == 2);
+    REQUIRE(b.column == 1);
+}
+
+TEST_CASE("line keeps climbing across several newlines", "[lexer]") {
+    Lexer lex("1\n2\n  3");
+
+    REQUIRE(lex.next_token().line == 1);
+
+    Token two = lex.next_token();
+    REQUIRE(two.line == 2);
+    REQUIRE(two.column == 1);
+
+    // two leading spaces on the third line, so 3 lands at column 3
+    Token three = lex.next_token();
+    REQUIRE(three.line == 3);
+    REQUIRE(three.column == 3);
+}
+
+TEST_CASE("location points at the start of a multi-char token", "[lexer]") {
+    Lexer lex("  hello");
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::Identifier);
+    REQUIRE(t.column == 3); // skips the two spaces and points at the 'h'
+}
