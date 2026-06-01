@@ -358,3 +358,107 @@ TEST_CASE("location points at the start of a multi-char token", "[lexer]") {
     REQUIRE(t.kind == TokenKind::Identifier);
     REQUIRE(t.column == 3); // skips the two spaces and points at the 'h'
 }
+
+TEST_CASE("empty input is just End", "[lexer]") {
+    Lexer lex("");
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("input that's only whitespace gives End", "[lexer]") {
+    Lexer lex("   \t \n  ");
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("asking past the end keeps handing back End", "[lexer]") {
+    // once we're done we shouldn't fall off the source, every extra call is End
+    Lexer lex("1");
+    REQUIRE(lex.next_token().kind == TokenKind::Integer);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("tabs and carriage returns count as whitespace", "[lexer]") {
+    Lexer lex("a\t\rb");
+
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("a minus in front of a number is its own token", "[lexer]") {
+    // we don't do negative literals in the lexer, -5 is minus then 5
+    Lexer lex("-5");
+
+    REQUIRE(lex.next_token().kind == TokenKind::Minus);
+
+    Token n = lex.next_token();
+    REQUIRE(n.kind == TokenKind::Integer);
+    REQUIRE(n.lexeme == "5");
+}
+
+TEST_CASE("column lands right after a two-char operator", "[lexer]") {
+    // "== x" -> the == sits at cols 1-2, the space is col 3, x at col 4
+    Lexer lex("== x");
+
+    Token op = lex.next_token();
+    REQUIRE(op.kind == TokenKind::EqualEqual);
+    REQUIRE(op.column == 1);
+
+    Token x = lex.next_token();
+    REQUIRE(x.kind == TokenKind::Identifier);
+    REQUIRE(x.column == 4);
+}
+
+TEST_CASE("a whole little function tokenizes in order", "[lexer]") {
+    // run a realistic snippet through the lexer and check the full stream
+    Lexer lex("fn add(a, b) { return a + b; }");
+
+    REQUIRE(lex.next_token().kind == TokenKind::Fn);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::LParen);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::Comma);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::RParen);
+    REQUIRE(lex.next_token().kind == TokenKind::LBrace);
+    REQUIRE(lex.next_token().kind == TokenKind::Return);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::Plus);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::Semicolon);
+    REQUIRE(lex.next_token().kind == TokenKind::RBrace);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("a condition with mixed literals and operators", "[lexer]") {
+    Lexer lex("if x >= 3.5 && y != nil");
+
+    REQUIRE(lex.next_token().kind == TokenKind::If);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::GreaterEqual);
+
+    Token f = lex.next_token();
+    REQUIRE(f.kind == TokenKind::Float);
+    REQUIRE(f.lexeme == "3.5");
+
+    REQUIRE(lex.next_token().kind == TokenKind::AmpAmp);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::BangEqual);
+    REQUIRE(lex.next_token().kind == TokenKind::Nil);
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("location is right for tokens spread over two lines", "[lexer]") {
+    Lexer lex("let x = 1\nx = x + 2");
+
+    REQUIRE(lex.next_token().line == 1); // let
+    REQUIRE(lex.next_token().line == 1); // x
+    REQUIRE(lex.next_token().line == 1); // =
+    REQUIRE(lex.next_token().line == 1); // 1
+
+    Token second_x = lex.next_token();
+    REQUIRE(second_x.kind == TokenKind::Identifier);
+    REQUIRE(second_x.line == 2);
+    REQUIRE(second_x.column == 1);
+}
