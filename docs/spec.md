@@ -32,6 +32,20 @@ letters, digits, or underscores.
 | Boolean | `true`, `false`     |
 | Nil     | `nil`               |
 
+### String escapes
+
+Inside a string literal the following escape sequences are recognized:
+
+| Escape | Meaning      |
+| ------ | ------------ |
+| `\n`   | newline      |
+| `\t`   | tab          |
+| `\"`   | double quote |
+| `\\`   | backslash    |
+
+Any other character after a backslash is kept as-is. A string that reaches the
+end of input before its closing quote is a lexical error.
+
 ### Operators
 
 | Category   | Operators                   |
