@@ -84,6 +84,9 @@ end of input before its closing quote is a lexical error.
 
 ## Grammar
 
+Whitespace and `//` comments are discarded by the lexer and do not appear in
+the grammar below.
+
     program     := stmt*
     stmt        := let_stmt | fn_decl | if_stmt | while_stmt | return_stmt | expr_stmt | block
     let_stmt    := "let" IDENT "=" expr
