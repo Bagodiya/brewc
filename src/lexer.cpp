@@ -135,6 +135,13 @@ Token Lexer::next_token() {
             }
         }
 
+        // if the loop stopped because we ran out of source instead of hitting
+        // a closing quote, the string was never finished. hand back an error
+        // so the caller knows something is wrong instead of a half-read string.
+        if (is_at_end()) {
+            return Token(TokenKind::Error, "unterminated string", start_line, start_col);
+        }
+
         advance(); // eat the closing quote
         return Token(TokenKind::String, std::move(value), start_line, start_col);
     }

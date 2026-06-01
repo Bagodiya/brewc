@@ -449,6 +449,39 @@ TEST_CASE("a condition with mixed literals and operators", "[lexer]") {
     REQUIRE(lex.next_token().kind == TokenKind::End);
 }
 
+TEST_CASE("a string with no closing quote is an error", "[lexer]") {
+    Lexer lex("\"oops");
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::Error);
+
+    // we should stay at the end now, not loop back into the bad string
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("just an opening quote is an error", "[lexer]") {
+    Lexer lex("\"");
+    REQUIRE(lex.next_token().kind == TokenKind::Error);
+}
+
+TEST_CASE("a trailing escaped quote still leaves the string open", "[lexer]") {
+    // the \" is an escaped quote inside the string, so there's no real
+    // closing quote and the whole thing is unterminated
+    Lexer lex("\"hi \\\"");
+    REQUIRE(lex.next_token().kind == TokenKind::Error);
+}
+
+TEST_CASE("a string broken by end of input reports where it started", "[lexer]") {
+    Lexer lex("let s = \"open");
+
+    REQUIRE(lex.next_token().kind == TokenKind::Let);
+    REQUIRE(lex.next_token().kind == TokenKind::Identifier);
+    REQUIRE(lex.next_token().kind == TokenKind::Equal);
+
+    Token bad = lex.next_token();
+    REQUIRE(bad.kind == TokenKind::Error);
+    REQUIRE(bad.column == 9); // points at the opening quote
+}
+
 TEST_CASE("location is right for tokens spread over two lines", "[lexer]") {
     Lexer lex("let x = 1\nx = x + 2");
 
