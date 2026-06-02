@@ -106,3 +106,5 @@ the grammar below.
     unary       := ("!" | "-") unary | call
     call        := primary ("(" args? ")")*
     primary     := INT | FLOAT | STRING | "true" | "false" | "nil" | IDENT | "(" expr ")"
+    params      := IDENT ("," IDENT)*
+    args        := expr ("," expr)*
