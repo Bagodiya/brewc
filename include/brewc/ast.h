@@ -1,6 +1,10 @@
 #ifndef BREWC_AST_H
 #define BREWC_AST_H
 
+#include <string>
+
+#include "brewc/token.h"
+
 namespace brewc {
 
 // forward declare the visitor so Expr can mention it before it's defined.
@@ -17,12 +21,44 @@ public:
     virtual void accept(Visitor& visitor) = 0;
 };
 
+// need these forward declared too, otherwise Visitor can't name them in the
+// visit_* signatures below.
+class LiteralExpr;
+class IdentifierExpr;
+
 // anything that wants to walk the tree (the printer, the interpreter, ...)
-// inherits from this. for now it's empty apart from the destructor since we
-// don't have any concrete nodes yet; each node adds its own visit_* here.
+// inherits from this. one visit_* per concrete node type; we keep them pure
+// so every visitor is forced to handle every node.
 class Visitor {
 public:
     virtual ~Visitor() = default;
+    virtual void visit_literal(LiteralExpr& expr) = 0;
+    virtual void visit_identifier(IdentifierExpr& expr) = 0;
+};
+
+// a literal value straight from the source: 42, 3.14, "hi", true, nil, ...
+// we don't have a runtime Value type yet (that comes later), so for now just
+// hang on to the token the lexer handed us and let a later pass turn it into
+// an actual value.
+class LiteralExpr : public Expr {
+public:
+    explicit LiteralExpr(Token tok) : token(std::move(tok)) {}
+
+    void accept(Visitor& visitor) override { visitor.visit_literal(*this); }
+
+    Token token;
+};
+
+// a bare name reference like `x` or `count`. keep the token around as well so
+// later passes can point at the right spot when something goes wrong.
+class IdentifierExpr : public Expr {
+public:
+    explicit IdentifierExpr(Token tok) : name(tok.lexeme), token(std::move(tok)) {}
+
+    void accept(Visitor& visitor) override { visitor.visit_identifier(*this); }
+
+    std::string name;
+    Token token;
 };
 
 } // namespace brewc

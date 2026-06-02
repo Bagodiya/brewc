@@ -10,6 +10,7 @@ FetchContent_MakeAvailable(Catch2)
 add_executable(brewc_tests
     test_smoke.cpp
     test_lexer.cpp
+    test_ast.cpp
     ${CMAKE_SOURCE_DIR}/src/lexer.cpp
 )
 
