@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <memory>
 #include <string>
 
 #include "brewc/ast.h"
@@ -20,7 +21,20 @@ struct RecordingVisitor : Visitor {
     void visit_identifier(IdentifierExpr& expr) override {
         last = "identifier:" + expr.name;
     }
+
+    void visit_binary(BinaryExpr& expr) override {
+        last = "binary:" + expr.op.lexeme;
+    }
+
+    void visit_unary(UnaryExpr& expr) override {
+        last = "unary:" + expr.op.lexeme;
+    }
 };
+
+// small helper so the tests don't drown in Token boilerplate.
+std::unique_ptr<Expr> int_lit(const std::string& text) {
+    return std::make_unique<LiteralExpr>(Token(TokenKind::Integer, text, 1, 1));
+}
 
 } // namespace
 
@@ -57,4 +71,50 @@ TEST_CASE("visitor works through an Expr base pointer", "[ast]") {
     node->accept(visitor);
     REQUIRE(visitor.last == "identifier:total");
     delete node;
+}
+
+TEST_CASE("binary expr holds both operands and the operator", "[ast]") {
+    BinaryExpr add(int_lit("1"), Token(TokenKind::Plus, "+", 1, 3), int_lit("2"));
+    REQUIRE(add.op.kind == TokenKind::Plus);
+    auto* lhs = dynamic_cast<LiteralExpr*>(add.left.get());
+    auto* rhs = dynamic_cast<LiteralExpr*>(add.right.get());
+    REQUIRE(lhs != nullptr);
+    REQUIRE(rhs != nullptr);
+    REQUIRE(lhs->token.lexeme == "1");
+    REQUIRE(rhs->token.lexeme == "2");
+}
+
+TEST_CASE("unary expr holds one operand and the operator", "[ast]") {
+    UnaryExpr neg(Token(TokenKind::Minus, "-", 1, 1), int_lit("5"));
+    REQUIRE(neg.op.kind == TokenKind::Minus);
+    auto* inner = dynamic_cast<LiteralExpr*>(neg.operand.get());
+    REQUIRE(inner != nullptr);
+    REQUIRE(inner->token.lexeme == "5");
+}
+
+TEST_CASE("accept dispatches binary nodes to the visitor", "[ast]") {
+    RecordingVisitor visitor;
+    BinaryExpr cmp(int_lit("3"), Token(TokenKind::Less, "<", 1, 3), int_lit("4"));
+    cmp.accept(visitor);
+    REQUIRE(visitor.last == "binary:<");
+}
+
+TEST_CASE("accept dispatches unary nodes to the visitor", "[ast]") {
+    RecordingVisitor visitor;
+    UnaryExpr bang(Token(TokenKind::Bang, "!", 1, 1), int_lit("0"));
+    bang.accept(visitor);
+    REQUIRE(visitor.last == "unary:!");
+}
+
+TEST_CASE("nested binary expr keeps its subtree alive", "[ast]") {
+    // (1 + 2) * 3 — make sure ownership nests without leaking or dangling.
+    auto inner = std::make_unique<BinaryExpr>(int_lit("1"),
+                                              Token(TokenKind::Plus, "+", 1, 3),
+                                              int_lit("2"));
+    BinaryExpr outer(std::move(inner), Token(TokenKind::Star, "*", 1, 7), int_lit("3"));
+
+    auto* left = dynamic_cast<BinaryExpr*>(outer.left.get());
+    REQUIRE(left != nullptr);
+    REQUIRE(left->op.kind == TokenKind::Plus);
+    REQUIRE(outer.op.kind == TokenKind::Star);
 }

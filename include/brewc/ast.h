@@ -1,7 +1,9 @@
 #ifndef BREWC_AST_H
 #define BREWC_AST_H
 
+#include <memory>
 #include <string>
+#include <utility>
 
 #include "brewc/token.h"
 
@@ -25,6 +27,8 @@ public:
 // visit_* signatures below.
 class LiteralExpr;
 class IdentifierExpr;
+class BinaryExpr;
+class UnaryExpr;
 
 // anything that wants to walk the tree (the printer, the interpreter, ...)
 // inherits from this. one visit_* per concrete node type; we keep them pure
@@ -34,6 +38,8 @@ public:
     virtual ~Visitor() = default;
     virtual void visit_literal(LiteralExpr& expr) = 0;
     virtual void visit_identifier(IdentifierExpr& expr) = 0;
+    virtual void visit_binary(BinaryExpr& expr) = 0;
+    virtual void visit_unary(UnaryExpr& expr) = 0;
 };
 
 // a literal value straight from the source: 42, 3.14, "hi", true, nil, ...
@@ -59,6 +65,35 @@ public:
 
     std::string name;
     Token token;
+};
+
+// something like `a + b` or `x < 10`. holds both sides plus the operator token
+// the lexer gave us so a later pass can look at op.kind to decide what to do.
+// we own the children through unique_ptr — when a BinaryExpr dies the whole
+// subtree under it goes with it.
+class BinaryExpr : public Expr {
+public:
+    BinaryExpr(std::unique_ptr<Expr> lhs, Token oper, std::unique_ptr<Expr> rhs)
+        : left(std::move(lhs)), op(std::move(oper)), right(std::move(rhs)) {}
+
+    void accept(Visitor& visitor) override { visitor.visit_binary(*this); }
+
+    std::unique_ptr<Expr> left;
+    Token op;
+    std::unique_ptr<Expr> right;
+};
+
+// a prefix operator applied to one operand: `-x`, `!done`. same idea as the
+// binary node but with a single child.
+class UnaryExpr : public Expr {
+public:
+    UnaryExpr(Token oper, std::unique_ptr<Expr> rhs)
+        : op(std::move(oper)), operand(std::move(rhs)) {}
+
+    void accept(Visitor& visitor) override { visitor.visit_unary(*this); }
+
+    Token op;
+    std::unique_ptr<Expr> operand;
 };
 
 } // namespace brewc
