@@ -31,6 +31,15 @@ struct RecordingVisitor : Visitor {
     }
 };
 
+// same idea for statements, just over the StmtVisitor side of the tree.
+struct RecordingStmtVisitor : StmtVisitor {
+    std::string last;
+
+    void visit_let(LetStmt& stmt) override {
+        last = "let:" + stmt.name;
+    }
+};
+
 // small helper so the tests don't drown in Token boilerplate.
 std::unique_ptr<Expr> int_lit(const std::string& text) {
     return std::make_unique<LiteralExpr>(Token(TokenKind::Integer, text, 1, 1));
@@ -104,6 +113,32 @@ TEST_CASE("accept dispatches unary nodes to the visitor", "[ast]") {
     UnaryExpr bang(Token(TokenKind::Bang, "!", 1, 1), int_lit("0"));
     bang.accept(visitor);
     REQUIRE(visitor.last == "unary:!");
+}
+
+TEST_CASE("let stmt keeps its name and initializer", "[ast]") {
+    // let total = 42
+    LetStmt stmt(Token(TokenKind::Identifier, "total", 3, 5), int_lit("42"));
+    REQUIRE(stmt.name == "total");
+    REQUIRE(stmt.name_token.line == 3);
+    REQUIRE(stmt.name_token.column == 5);
+    auto* init = dynamic_cast<LiteralExpr*>(stmt.initializer.get());
+    REQUIRE(init != nullptr);
+    REQUIRE(init->token.lexeme == "42");
+}
+
+TEST_CASE("accept dispatches let stmts to the visitor", "[ast]") {
+    RecordingStmtVisitor visitor;
+    LetStmt stmt(Token(TokenKind::Identifier, "x", 1, 5), int_lit("1"));
+    stmt.accept(visitor);
+    REQUIRE(visitor.last == "let:x");
+}
+
+TEST_CASE("let stmt works through a Stmt base pointer", "[ast]") {
+    RecordingStmtVisitor visitor;
+    std::unique_ptr<Stmt> node =
+        std::make_unique<LetStmt>(Token(TokenKind::Identifier, "count", 1, 5), int_lit("0"));
+    node->accept(visitor);
+    REQUIRE(visitor.last == "let:count");
 }
 
 TEST_CASE("nested binary expr keeps its subtree alive", "[ast]") {

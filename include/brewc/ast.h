@@ -96,6 +96,44 @@ public:
     std::unique_ptr<Expr> operand;
 };
 
+// statements are the other half of the tree. expressions produce a value;
+// statements get run for their effect (binding a name, looping, ...). they get
+// their own base class and their own visitor so a pass can choose to care about
+// only one side or the other.
+class StmtVisitor;
+
+class Stmt {
+public:
+    virtual ~Stmt() = default;
+    virtual void accept(StmtVisitor& visitor) = 0;
+};
+
+// forward declare each concrete statement so StmtVisitor can name it. more get
+// added here as the later steps bring in if/while/blocks/functions.
+class LetStmt;
+
+class StmtVisitor {
+public:
+    virtual ~StmtVisitor() = default;
+    virtual void visit_let(LetStmt& stmt) = 0;
+};
+
+// `let x = <expr>`. we keep the name token (so error messages can point at the
+// right spot) and own the initializer expression. the initializer is always
+// present for now — bare `let x;` isn't part of the grammar yet.
+class LetStmt : public Stmt {
+public:
+    LetStmt(Token name_tok, std::unique_ptr<Expr> init)
+        : name(name_tok.lexeme), name_token(std::move(name_tok)),
+          initializer(std::move(init)) {}
+
+    void accept(StmtVisitor& visitor) override { visitor.visit_let(*this); }
+
+    std::string name;
+    Token name_token;
+    std::unique_ptr<Expr> initializer;
+};
+
 } // namespace brewc
 
 #endif
