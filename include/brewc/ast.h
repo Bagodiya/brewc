@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "brewc/token.h"
 
@@ -109,13 +110,19 @@ public:
 };
 
 // forward declare each concrete statement so StmtVisitor can name it. more get
-// added here as the later steps bring in if/while/blocks/functions.
+// added here as the later steps bring in functions.
 class LetStmt;
+class IfStmt;
+class WhileStmt;
+class BlockStmt;
 
 class StmtVisitor {
 public:
     virtual ~StmtVisitor() = default;
     virtual void visit_let(LetStmt& stmt) = 0;
+    virtual void visit_if(IfStmt& stmt) = 0;
+    virtual void visit_while(WhileStmt& stmt) = 0;
+    virtual void visit_block(BlockStmt& stmt) = 0;
 };
 
 // `let x = <expr>`. we keep the name token (so error messages can point at the
@@ -132,6 +139,47 @@ public:
     std::string name;
     Token name_token;
     std::unique_ptr<Expr> initializer;
+};
+
+// a sequence of statements that share a scope: `{ ... }`. owns each statement
+// inside it. we put this above IfStmt/WhileStmt since their branches are
+// usually blocks and it reads nicer to have it defined first.
+class BlockStmt : public Stmt {
+public:
+    explicit BlockStmt(std::vector<std::unique_ptr<Stmt>> stmts)
+        : statements(std::move(stmts)) {}
+
+    void accept(StmtVisitor& visitor) override { visitor.visit_block(*this); }
+
+    std::vector<std::unique_ptr<Stmt>> statements;
+};
+
+// `if <cond> { ... } else { ... }`. the else side is optional, so else_branch
+// is allowed to be null. branches are just statements (normally a BlockStmt).
+class IfStmt : public Stmt {
+public:
+    IfStmt(std::unique_ptr<Expr> cond, std::unique_ptr<Stmt> then_b,
+           std::unique_ptr<Stmt> else_b)
+        : condition(std::move(cond)), then_branch(std::move(then_b)),
+          else_branch(std::move(else_b)) {}
+
+    void accept(StmtVisitor& visitor) override { visitor.visit_if(*this); }
+
+    std::unique_ptr<Expr> condition;
+    std::unique_ptr<Stmt> then_branch;
+    std::unique_ptr<Stmt> else_branch; // may be null when there's no else
+};
+
+// `while <cond> { ... }`. runs the body as long as the condition holds.
+class WhileStmt : public Stmt {
+public:
+    WhileStmt(std::unique_ptr<Expr> cond, std::unique_ptr<Stmt> body_stmt)
+        : condition(std::move(cond)), body(std::move(body_stmt)) {}
+
+    void accept(StmtVisitor& visitor) override { visitor.visit_while(*this); }
+
+    std::unique_ptr<Expr> condition;
+    std::unique_ptr<Stmt> body;
 };
 
 } // namespace brewc

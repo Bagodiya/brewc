@@ -38,7 +38,26 @@ struct RecordingStmtVisitor : StmtVisitor {
     void visit_let(LetStmt& stmt) override {
         last = "let:" + stmt.name;
     }
+
+    void visit_if(IfStmt& stmt) override {
+        last = stmt.else_branch ? "if:else" : "if:noelse";
+    }
+
+    void visit_while(WhileStmt&) override {
+        last = "while";
+    }
+
+    void visit_block(BlockStmt& stmt) override {
+        last = "block:" + std::to_string(stmt.statements.size());
+    }
 };
+
+// builds a throwaway `let x = 1` so the control-flow tests have a body to hold.
+std::unique_ptr<Stmt> dummy_let() {
+    return std::make_unique<LetStmt>(Token(TokenKind::Identifier, "x", 1, 1),
+                                     std::make_unique<LiteralExpr>(
+                                         Token(TokenKind::Integer, "1", 1, 1)));
+}
 
 // small helper so the tests don't drown in Token boilerplate.
 std::unique_ptr<Expr> int_lit(const std::string& text) {
@@ -139,6 +158,55 @@ TEST_CASE("let stmt works through a Stmt base pointer", "[ast]") {
         std::make_unique<LetStmt>(Token(TokenKind::Identifier, "count", 1, 5), int_lit("0"));
     node->accept(visitor);
     REQUIRE(visitor.last == "let:count");
+}
+
+TEST_CASE("block stmt owns its statements in order", "[ast]") {
+    std::vector<std::unique_ptr<Stmt>> body;
+    body.push_back(dummy_let());
+    body.push_back(dummy_let());
+    BlockStmt block(std::move(body));
+    REQUIRE(block.statements.size() == 2);
+    REQUIRE(dynamic_cast<LetStmt*>(block.statements[0].get()) != nullptr);
+}
+
+TEST_CASE("if stmt without else leaves else_branch null", "[ast]") {
+    IfStmt stmt(int_lit("1"), dummy_let(), nullptr);
+    REQUIRE(stmt.then_branch != nullptr);
+    REQUIRE(stmt.else_branch == nullptr);
+}
+
+TEST_CASE("if stmt with else holds both branches", "[ast]") {
+    IfStmt stmt(int_lit("1"), dummy_let(), dummy_let());
+    REQUIRE(stmt.then_branch != nullptr);
+    REQUIRE(stmt.else_branch != nullptr);
+}
+
+TEST_CASE("while stmt keeps condition and body", "[ast]") {
+    WhileStmt stmt(int_lit("1"), dummy_let());
+    REQUIRE(stmt.condition != nullptr);
+    REQUIRE(stmt.body != nullptr);
+}
+
+TEST_CASE("accept routes control-flow stmts to the right visit", "[ast]") {
+    RecordingStmtVisitor visitor;
+
+    IfStmt no_else(int_lit("1"), dummy_let(), nullptr);
+    no_else.accept(visitor);
+    REQUIRE(visitor.last == "if:noelse");
+
+    IfStmt with_else(int_lit("1"), dummy_let(), dummy_let());
+    with_else.accept(visitor);
+    REQUIRE(visitor.last == "if:else");
+
+    WhileStmt loop(int_lit("1"), dummy_let());
+    loop.accept(visitor);
+    REQUIRE(visitor.last == "while");
+
+    std::vector<std::unique_ptr<Stmt>> body;
+    body.push_back(dummy_let());
+    BlockStmt block(std::move(body));
+    block.accept(visitor);
+    REQUIRE(visitor.last == "block:1");
 }
 
 TEST_CASE("nested binary expr keeps its subtree alive", "[ast]") {
