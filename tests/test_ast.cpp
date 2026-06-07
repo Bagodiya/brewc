@@ -29,6 +29,10 @@ struct RecordingVisitor : Visitor {
     void visit_unary(UnaryExpr& expr) override {
         last = "unary:" + expr.op.lexeme;
     }
+
+    void visit_call(CallExpr& expr) override {
+        last = "call:" + std::to_string(expr.args.size());
+    }
 };
 
 // same idea for statements, just over the StmtVisitor side of the tree.
@@ -49,6 +53,10 @@ struct RecordingStmtVisitor : StmtVisitor {
 
     void visit_block(BlockStmt& stmt) override {
         last = "block:" + std::to_string(stmt.statements.size());
+    }
+
+    void visit_fn(FnDecl& stmt) override {
+        last = "fn:" + stmt.name + "/" + std::to_string(stmt.params.size());
     }
 };
 
@@ -220,4 +228,73 @@ TEST_CASE("nested binary expr keeps its subtree alive", "[ast]") {
     REQUIRE(left != nullptr);
     REQUIRE(left->op.kind == TokenKind::Plus);
     REQUIRE(outer.op.kind == TokenKind::Star);
+}
+
+TEST_CASE("call expr keeps its callee and arguments", "[ast]") {
+    // foo(1, 2)
+    auto callee = std::make_unique<IdentifierExpr>(Token(TokenKind::Identifier, "foo", 1, 1));
+    std::vector<std::unique_ptr<Expr>> args;
+    args.push_back(int_lit("1"));
+    args.push_back(int_lit("2"));
+    CallExpr call(std::move(callee), Token(TokenKind::LParen, "(", 1, 4), std::move(args));
+
+    auto* name = dynamic_cast<IdentifierExpr*>(call.callee.get());
+    REQUIRE(name != nullptr);
+    REQUIRE(name->name == "foo");
+    REQUIRE(call.args.size() == 2);
+    REQUIRE(call.paren.kind == TokenKind::LParen);
+}
+
+TEST_CASE("call expr allows an empty argument list", "[ast]") {
+    auto callee = std::make_unique<IdentifierExpr>(Token(TokenKind::Identifier, "now", 1, 1));
+    CallExpr call(std::move(callee), Token(TokenKind::LParen, "(", 1, 4), {});
+    REQUIRE(call.args.empty());
+}
+
+TEST_CASE("accept dispatches call nodes to the visitor", "[ast]") {
+    RecordingVisitor visitor;
+    auto callee = std::make_unique<IdentifierExpr>(Token(TokenKind::Identifier, "bar", 1, 1));
+    std::vector<std::unique_ptr<Expr>> args;
+    args.push_back(int_lit("7"));
+    CallExpr call(std::move(callee), Token(TokenKind::LParen, "(", 1, 4), std::move(args));
+    call.accept(visitor);
+    REQUIRE(visitor.last == "call:1");
+}
+
+TEST_CASE("fn decl keeps its name, params and body", "[ast]") {
+    // fn add(a, b) { ... }
+    std::vector<Token> params;
+    params.push_back(Token(TokenKind::Identifier, "a", 1, 8));
+    params.push_back(Token(TokenKind::Identifier, "b", 1, 11));
+
+    std::vector<std::unique_ptr<Stmt>> body;
+    body.push_back(dummy_let());
+    auto block = std::make_unique<BlockStmt>(std::move(body));
+
+    FnDecl decl(Token(TokenKind::Identifier, "add", 1, 4), std::move(params), std::move(block));
+    REQUIRE(decl.name == "add");
+    REQUIRE(decl.params.size() == 2);
+    REQUIRE(decl.params[0].lexeme == "a");
+    REQUIRE(decl.params[1].lexeme == "b");
+    REQUIRE(dynamic_cast<BlockStmt*>(decl.body.get()) != nullptr);
+}
+
+TEST_CASE("fn decl with no params has an empty param list", "[ast]") {
+    std::vector<std::unique_ptr<Stmt>> body;
+    auto block = std::make_unique<BlockStmt>(std::move(body));
+    FnDecl decl(Token(TokenKind::Identifier, "main", 1, 4), {}, std::move(block));
+    REQUIRE(decl.name == "main");
+    REQUIRE(decl.params.empty());
+}
+
+TEST_CASE("accept dispatches fn decls to the visitor", "[ast]") {
+    RecordingStmtVisitor visitor;
+    std::vector<Token> params;
+    params.push_back(Token(TokenKind::Identifier, "n", 1, 8));
+    std::vector<std::unique_ptr<Stmt>> body;
+    body.push_back(dummy_let());
+    auto block = std::make_unique<BlockStmt>(std::move(body));
+    FnDecl decl(Token(TokenKind::Identifier, "square", 1, 4), std::move(params), std::move(block));
+    decl.accept(visitor);
+    REQUIRE(visitor.last == "fn:square/1");
 }

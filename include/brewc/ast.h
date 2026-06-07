@@ -30,6 +30,7 @@ class LiteralExpr;
 class IdentifierExpr;
 class BinaryExpr;
 class UnaryExpr;
+class CallExpr;
 
 // anything that wants to walk the tree (the printer, the interpreter, ...)
 // inherits from this. one visit_* per concrete node type; we keep them pure
@@ -41,6 +42,7 @@ public:
     virtual void visit_identifier(IdentifierExpr& expr) = 0;
     virtual void visit_binary(BinaryExpr& expr) = 0;
     virtual void visit_unary(UnaryExpr& expr) = 0;
+    virtual void visit_call(CallExpr& expr) = 0;
 };
 
 // a literal value straight from the source: 42, 3.14, "hi", true, nil, ...
@@ -97,6 +99,24 @@ public:
     std::unique_ptr<Expr> operand;
 };
 
+// a function call like `foo(1, 2)`. the callee is itself an expression — usually
+// just an identifier, but keeping it as an Expr means `get_fn()(x)` style calls
+// work later without changing this node. we own the callee and every argument.
+// the paren token is handy for pointing at the call site in error messages.
+class CallExpr : public Expr {
+public:
+    CallExpr(std::unique_ptr<Expr> target, Token paren_tok,
+             std::vector<std::unique_ptr<Expr>> arg_list)
+        : callee(std::move(target)), paren(std::move(paren_tok)),
+          args(std::move(arg_list)) {}
+
+    void accept(Visitor& visitor) override { visitor.visit_call(*this); }
+
+    std::unique_ptr<Expr> callee;
+    Token paren;
+    std::vector<std::unique_ptr<Expr>> args;
+};
+
 // statements are the other half of the tree. expressions produce a value;
 // statements get run for their effect (binding a name, looping, ...). they get
 // their own base class and their own visitor so a pass can choose to care about
@@ -115,6 +135,7 @@ class LetStmt;
 class IfStmt;
 class WhileStmt;
 class BlockStmt;
+class FnDecl;
 
 class StmtVisitor {
 public:
@@ -123,6 +144,7 @@ public:
     virtual void visit_if(IfStmt& stmt) = 0;
     virtual void visit_while(WhileStmt& stmt) = 0;
     virtual void visit_block(BlockStmt& stmt) = 0;
+    virtual void visit_fn(FnDecl& stmt) = 0;
 };
 
 // `let x = <expr>`. we keep the name token (so error messages can point at the
@@ -179,6 +201,24 @@ public:
     void accept(StmtVisitor& visitor) override { visitor.visit_while(*this); }
 
     std::unique_ptr<Expr> condition;
+    std::unique_ptr<Stmt> body;
+};
+
+// `fn name(a, b) { ... }`. params are kept as tokens so we still have their
+// source location and lexeme; a later pass turns those into the actual bindings.
+// the body is whatever block the parser hands us, owned here. an empty params
+// vector just means a no-arg function like `fn main() { ... }`.
+class FnDecl : public Stmt {
+public:
+    FnDecl(Token name_tok, std::vector<Token> param_list, std::unique_ptr<Stmt> body_stmt)
+        : name(name_tok.lexeme), name_token(std::move(name_tok)),
+          params(std::move(param_list)), body(std::move(body_stmt)) {}
+
+    void accept(StmtVisitor& visitor) override { visitor.visit_fn(*this); }
+
+    std::string name;
+    Token name_token;
+    std::vector<Token> params;
     std::unique_ptr<Stmt> body;
 };
 
