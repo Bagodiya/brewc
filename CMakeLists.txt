@@ -19,6 +19,7 @@ endif()
 add_executable(brewc
     src/main.cpp
     src/lexer.cpp
+    src/parser.cpp
 )
 target_include_directories(brewc PRIVATE include)
 
