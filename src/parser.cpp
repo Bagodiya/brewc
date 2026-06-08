@@ -49,4 +49,35 @@ const Token& Parser::consume(TokenKind kind, const std::string& message) {
     throw std::runtime_error(message);
 }
 
+std::unique_ptr<Expr> Parser::parse_expression() {
+    // nothing above primary exists yet — the precedence parser slots in here next.
+    return parse_primary();
+}
+
+std::unique_ptr<Expr> Parser::parse_primary() {
+    // the literals all carry their value in the lexeme, so we just keep the token
+    // around and let a later pass turn it into a real value. true/false/nil are
+    // keywords but they read as literals here too.
+    if (check(TokenKind::Integer) || check(TokenKind::Float) ||
+        check(TokenKind::String) || check(TokenKind::True) ||
+        check(TokenKind::False) || check(TokenKind::Nil)) {
+        return std::make_unique<LiteralExpr>(advance());
+    }
+
+    if (check(TokenKind::Identifier)) {
+        return std::make_unique<IdentifierExpr>(advance());
+    }
+
+    // a parenthesised expression: drop the parens and keep whatever's inside.
+    // we don't make a node for the grouping itself since the tree shape already
+    // captures the grouping once binary precedence is in.
+    if (match(TokenKind::LParen)) {
+        auto inner = parse_expression();
+        consume(TokenKind::RParen, "expected ')' after expression");
+        return inner;
+    }
+
+    throw std::runtime_error("expected an expression");
+}
+
 } // namespace brewc
