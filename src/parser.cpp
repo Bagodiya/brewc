@@ -49,9 +49,66 @@ const Token& Parser::consume(TokenKind kind, const std::string& message) {
     throw std::runtime_error(message);
 }
 
+namespace {
+
+// how tightly each binary operator binds. higher number wins, so it grabs its
+// operands before a weaker neighbour does. anything that isn't a binary operator
+// returns 0, which the climbing loop reads as "stop, this isn't ours".
+int binary_precedence(TokenKind kind) {
+    switch (kind) {
+    case TokenKind::PipePipe:
+        return 1;
+    case TokenKind::AmpAmp:
+        return 2;
+    case TokenKind::EqualEqual:
+    case TokenKind::BangEqual:
+        return 3;
+    case TokenKind::Less:
+    case TokenKind::Greater:
+    case TokenKind::LessEqual:
+    case TokenKind::GreaterEqual:
+        return 4;
+    case TokenKind::Plus:
+    case TokenKind::Minus:
+        return 5;
+    case TokenKind::Star:
+    case TokenKind::Slash:
+    case TokenKind::Percent:
+        return 6;
+    default:
+        return 0;
+    }
+}
+
+} // namespace
+
 std::unique_ptr<Expr> Parser::parse_expression() {
-    // nothing above primary exists yet — the precedence parser slots in here next.
-    return parse_primary();
+    // start at 1 so every binary operator is in play (0 means "not an operator").
+    return parse_binary(1);
+}
+
+std::unique_ptr<Expr> Parser::parse_binary(int min_prec) {
+    auto left = parse_primary();
+
+    while (true) {
+        int prec = binary_precedence(peek().kind);
+        // either we hit something that isn't a binary operator, or it binds
+        // looser than what the caller asked for — either way we're done here.
+        if (prec == 0 || prec < min_prec) {
+            break;
+        }
+
+        Token op = advance();
+        // all our operators are left-associative, so the right side stops at the
+        // next operator of the same precedence (prec + 1) and hands it back to us
+        // to fold in on the left. that's what keeps `1 - 2 - 3` grouping as
+        // `(1 - 2) - 3` instead of `1 - (2 - 3)`.
+        auto right = parse_binary(prec + 1);
+        left = std::make_unique<BinaryExpr>(std::move(left), std::move(op),
+                                            std::move(right));
+    }
+
+    return left;
 }
 
 std::unique_ptr<Expr> Parser::parse_primary() {

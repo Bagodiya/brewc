@@ -19,12 +19,17 @@ class Parser {
 public:
     explicit Parser(std::vector<Token> tokens);
 
-    // parse a single expression and hand back the tree for it. for now this is
-    // just the primary parser; once precedence climbing lands (next step) this
-    // becomes the real entry point and parse_primary drops back to a leaf parser.
+    // parse a single expression and hand back the tree for it. this is the real
+    // entry point now: it kicks off precedence climbing at the lowest level so
+    // the whole operator grammar gets handled, not just leaves.
     std::unique_ptr<Expr> parse_expression();
 
 private:
+    // precedence climbing. parse a left operand, then keep folding in binary
+    // operators as long as they bind at least as tightly as min_prec. operators
+    // weaker than min_prec are left for the caller one level up to deal with.
+    std::unique_ptr<Expr> parse_binary(int min_prec);
+
     // the smallest pieces: literals, names, and a parenthesised expression.
     std::unique_ptr<Expr> parse_primary();
 
