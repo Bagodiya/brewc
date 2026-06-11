@@ -30,6 +30,11 @@ private:
     // weaker than min_prec are left for the caller one level up to deal with.
     std::unique_ptr<Expr> parse_binary(int min_prec);
 
+    // prefix operators: `-x` and `!cond`. sits between the binary climber and
+    // the primaries so a unary binds tighter than any binary operator but still
+    // applies to the whole primary that follows it.
+    std::unique_ptr<Expr> parse_unary();
+
     // the smallest pieces: literals, names, and a parenthesised expression.
     std::unique_ptr<Expr> parse_primary();
 

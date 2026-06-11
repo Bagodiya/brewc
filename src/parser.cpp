@@ -88,7 +88,7 @@ std::unique_ptr<Expr> Parser::parse_expression() {
 }
 
 std::unique_ptr<Expr> Parser::parse_binary(int min_prec) {
-    auto left = parse_primary();
+    auto left = parse_unary();
 
     while (true) {
         int prec = binary_precedence(peek().kind);
@@ -109,6 +109,17 @@ std::unique_ptr<Expr> Parser::parse_binary(int min_prec) {
     }
 
     return left;
+}
+
+std::unique_ptr<Expr> Parser::parse_unary() {
+    // `-` and `!` are the only prefix operators. recurse on the operand so a
+    // stack like `--x` or `!!done` just nests one unary node inside another.
+    if (check(TokenKind::Minus) || check(TokenKind::Bang)) {
+        Token op = advance();
+        auto operand = parse_unary();
+        return std::make_unique<UnaryExpr>(std::move(op), std::move(operand));
+    }
+    return parse_primary();
 }
 
 std::unique_ptr<Expr> Parser::parse_primary() {

@@ -205,3 +205,63 @@ TEST_CASE("logical and binds tighter than logical or", "[parser]") {
     auto* rhs = as_binary(root->right.get());
     REQUIRE(rhs->op.kind == TokenKind::AmpAmp);
 }
+
+namespace {
+
+// same idea as as_binary but for the unary node, so the tests below don't have
+// to repeat the cast and null check.
+UnaryExpr* as_unary(Expr* expr) {
+    auto* un = dynamic_cast<UnaryExpr*>(expr);
+    REQUIRE(un != nullptr);
+    return un;
+}
+
+} // namespace
+
+TEST_CASE("parses a negation", "[parser]") {
+    auto expr = parse_expr("-5");
+    auto* un = as_unary(expr.get());
+    REQUIRE(un->op.kind == TokenKind::Minus);
+    REQUIRE(leaf_text(un->operand.get()) == "5");
+}
+
+TEST_CASE("parses a logical not", "[parser]") {
+    auto expr = parse_expr("!done");
+    auto* un = as_unary(expr.get());
+    REQUIRE(un->op.kind == TokenKind::Bang);
+    REQUIRE(leaf_text(un->operand.get()) == "done");
+}
+
+TEST_CASE("stacked unary operators nest", "[parser]") {
+    // !!x is !(!x), so we expect two Bang nodes wrapping the identifier.
+    auto expr = parse_expr("!!x");
+    auto* outer = as_unary(expr.get());
+    REQUIRE(outer->op.kind == TokenKind::Bang);
+
+    auto* inner = as_unary(outer->operand.get());
+    REQUIRE(inner->op.kind == TokenKind::Bang);
+    REQUIRE(leaf_text(inner->operand.get()) == "x");
+}
+
+TEST_CASE("unary binds tighter than multiplication", "[parser]") {
+    // -a * b groups as (-a) * b, so the * is at the root with the unary on its
+    // left, not -(a * b).
+    auto expr = parse_expr("-a * b");
+    auto* root = as_binary(expr.get());
+    REQUIRE(root->op.kind == TokenKind::Star);
+    REQUIRE(leaf_text(root->right.get()) == "b");
+
+    auto* lhs = as_unary(root->left.get());
+    REQUIRE(lhs->op.kind == TokenKind::Minus);
+    REQUIRE(leaf_text(lhs->operand.get()) == "a");
+}
+
+TEST_CASE("unary applies to a parenthesised group", "[parser]") {
+    // -(1 + 2) keeps the whole sum under the negation.
+    auto expr = parse_expr("-(1 + 2)");
+    auto* un = as_unary(expr.get());
+    REQUIRE(un->op.kind == TokenKind::Minus);
+
+    auto* inner = as_binary(un->operand.get());
+    REQUIRE(inner->op.kind == TokenKind::Plus);
+}
