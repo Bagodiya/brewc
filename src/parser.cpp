@@ -82,6 +82,24 @@ int binary_precedence(TokenKind kind) {
 
 } // namespace
 
+std::unique_ptr<Stmt> Parser::parse_statement() {
+    if (check(TokenKind::Let)) {
+        return parse_let_stmt();
+    }
+    // nothing else is wired up yet, so anything that isn't a `let` is a hard
+    // error for now. if/while/fn join the dispatch in the next few steps.
+    throw std::runtime_error("expected a statement");
+}
+
+std::unique_ptr<Stmt> Parser::parse_let_stmt() {
+    advance(); // drop the `let` we already peeked at in parse_statement.
+    const Token& name = consume(TokenKind::Identifier,
+                                "expected a name after 'let'");
+    consume(TokenKind::Equal, "expected '=' after the name in a let");
+    auto initializer = parse_expression();
+    return std::make_unique<LetStmt>(name, std::move(initializer));
+}
+
 std::unique_ptr<Expr> Parser::parse_expression() {
     // start at 1 so every binary operator is in play (0 means "not an operator").
     return parse_binary(1);

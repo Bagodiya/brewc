@@ -35,6 +35,12 @@ std::unique_ptr<Expr> parse_expr(const std::string& source) {
     return parser.parse_expression();
 }
 
+// same shortcut but for a statement, so the let tests below read as one call.
+std::unique_ptr<Stmt> parse_stmt(const std::string& source) {
+    Parser parser(lex_all(source));
+    return parser.parse_statement();
+}
+
 } // namespace
 
 TEST_CASE("parses an integer literal", "[parser]") {
@@ -264,4 +270,48 @@ TEST_CASE("unary applies to a parenthesised group", "[parser]") {
 
     auto* inner = as_binary(un->operand.get());
     REQUIRE(inner->op.kind == TokenKind::Plus);
+}
+
+TEST_CASE("parses a let with a literal initializer", "[parser]") {
+    auto stmt = parse_stmt("let x = 10");
+    auto* let = dynamic_cast<LetStmt*>(stmt.get());
+    REQUIRE(let != nullptr);
+    REQUIRE(let->name == "x");
+
+    auto* lit = dynamic_cast<LiteralExpr*>(let->initializer.get());
+    REQUIRE(lit != nullptr);
+    REQUIRE(lit->token.lexeme == "10");
+}
+
+TEST_CASE("a let initializer can be a whole expression", "[parser]") {
+    // the right side should go through the normal expression parser, so the
+    // precedence rules still apply: 1 + 2 * 3 hangs a + at the top.
+    auto stmt = parse_stmt("let total = 1 + 2 * 3");
+    auto* let = dynamic_cast<LetStmt*>(stmt.get());
+    REQUIRE(let != nullptr);
+    REQUIRE(let->name == "total");
+
+    auto* root = as_binary(let->initializer.get());
+    REQUIRE(root->op.kind == TokenKind::Plus);
+    REQUIRE(leaf_text(root->left.get()) == "1");
+    REQUIRE(as_binary(root->right.get())->op.kind == TokenKind::Star);
+}
+
+TEST_CASE("a let initializer can name another variable", "[parser]") {
+    auto stmt = parse_stmt("let name = other");
+    auto* let = dynamic_cast<LetStmt*>(stmt.get());
+    REQUIRE(let != nullptr);
+    REQUIRE(let->name == "name");
+
+    auto* id = dynamic_cast<IdentifierExpr*>(let->initializer.get());
+    REQUIRE(id != nullptr);
+    REQUIRE(id->name == "other");
+}
+
+TEST_CASE("a let without a name is reported", "[parser]") {
+    REQUIRE_THROWS(parse_stmt("let = 5"));
+}
+
+TEST_CASE("a let missing the equals sign is reported", "[parser]") {
+    REQUIRE_THROWS(parse_stmt("let x 5"));
 }

@@ -19,12 +19,22 @@ class Parser {
 public:
     explicit Parser(std::vector<Token> tokens);
 
+    // parse a single statement and hand back the tree for it. right now the only
+    // statement we know about is `let`, but this is the spot every other kind
+    // (if, while, fn, ...) will get hooked into as the later steps land.
+    std::unique_ptr<Stmt> parse_statement();
+
     // parse a single expression and hand back the tree for it. this is the real
     // entry point now: it kicks off precedence climbing at the lowest level so
     // the whole operator grammar gets handled, not just leaves.
     std::unique_ptr<Expr> parse_expression();
 
 private:
+    // `let x = <expr>`. assumes the caller already saw a `let` up next and lets
+    // parse_statement route us here. grabs the name, eats the `=`, then reuses
+    // the expression parser for whatever the initializer turns out to be.
+    std::unique_ptr<Stmt> parse_let_stmt();
+
     // precedence climbing. parse a left operand, then keep folding in binary
     // operators as long as they bind at least as tightly as min_prec. operators
     // weaker than min_prec are left for the caller one level up to deal with.
