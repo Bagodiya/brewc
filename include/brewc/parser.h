@@ -35,6 +35,16 @@ private:
     // the expression parser for whatever the initializer turns out to be.
     std::unique_ptr<Stmt> parse_let_stmt();
 
+    // `if <cond> { ... } else { ... }`. the else side is optional, and when it's
+    // followed by another `if` we just parse that as the else branch so `else if`
+    // chains fall out for free.
+    std::unique_ptr<Stmt> parse_if_stmt();
+
+    // a `{ ... }` block. eats the braces and collects whatever statements sit
+    // between them. shared by if (and later while/fn) so they all agree on what
+    // a block looks like.
+    std::unique_ptr<Stmt> parse_block();
+
     // precedence climbing. parse a left operand, then keep folding in binary
     // operators as long as they bind at least as tightly as min_prec. operators
     // weaker than min_prec are left for the caller one level up to deal with.

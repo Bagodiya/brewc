@@ -315,3 +315,64 @@ TEST_CASE("a let without a name is reported", "[parser]") {
 TEST_CASE("a let missing the equals sign is reported", "[parser]") {
     REQUIRE_THROWS(parse_stmt("let x 5"));
 }
+
+TEST_CASE("parses an if with no else", "[parser]") {
+    auto stmt = parse_stmt("if x < 10 { let y = 1 }");
+    auto* iff = dynamic_cast<IfStmt*>(stmt.get());
+    REQUIRE(iff != nullptr);
+
+    auto* cond = as_binary(iff->condition.get());
+    REQUIRE(cond->op.kind == TokenKind::Less);
+
+    auto* then_b = dynamic_cast<BlockStmt*>(iff->then_branch.get());
+    REQUIRE(then_b != nullptr);
+    REQUIRE(then_b->statements.size() == 1);
+    REQUIRE(iff->else_branch == nullptr);
+}
+
+TEST_CASE("parses an if with an else block", "[parser]") {
+    auto stmt = parse_stmt("if done { let a = 1 } else { let b = 2 }");
+    auto* iff = dynamic_cast<IfStmt*>(stmt.get());
+    REQUIRE(iff != nullptr);
+
+    auto* then_b = dynamic_cast<BlockStmt*>(iff->then_branch.get());
+    REQUIRE(then_b != nullptr);
+
+    auto* else_b = dynamic_cast<BlockStmt*>(iff->else_branch.get());
+    REQUIRE(else_b != nullptr);
+    REQUIRE(else_b->statements.size() == 1);
+}
+
+TEST_CASE("an else if chains into another if", "[parser]") {
+    // the else slot should hold a nested IfStmt, not a block.
+    auto stmt = parse_stmt("if a { let x = 1 } else if b { let y = 2 } else { let z = 3 }");
+    auto* outer = dynamic_cast<IfStmt*>(stmt.get());
+    REQUIRE(outer != nullptr);
+
+    auto* inner = dynamic_cast<IfStmt*>(outer->else_branch.get());
+    REQUIRE(inner != nullptr);
+
+    auto* inner_cond = dynamic_cast<IdentifierExpr*>(inner->condition.get());
+    REQUIRE(inner_cond != nullptr);
+    REQUIRE(inner_cond->name == "b");
+
+    REQUIRE(dynamic_cast<BlockStmt*>(inner->else_branch.get()) != nullptr);
+}
+
+TEST_CASE("an empty block is allowed", "[parser]") {
+    auto stmt = parse_stmt("if a {}");
+    auto* iff = dynamic_cast<IfStmt*>(stmt.get());
+    REQUIRE(iff != nullptr);
+
+    auto* then_b = dynamic_cast<BlockStmt*>(iff->then_branch.get());
+    REQUIRE(then_b != nullptr);
+    REQUIRE(then_b->statements.empty());
+}
+
+TEST_CASE("an if missing its opening brace is reported", "[parser]") {
+    REQUIRE_THROWS(parse_stmt("if a let x = 1 }"));
+}
+
+TEST_CASE("an unterminated block is reported", "[parser]") {
+    REQUIRE_THROWS(parse_stmt("if a { let x = 1"));
+}
