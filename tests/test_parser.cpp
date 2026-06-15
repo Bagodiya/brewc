@@ -376,3 +376,41 @@ TEST_CASE("an if missing its opening brace is reported", "[parser]") {
 TEST_CASE("an unterminated block is reported", "[parser]") {
     REQUIRE_THROWS(parse_stmt("if a { let x = 1"));
 }
+
+TEST_CASE("parses a while loop", "[parser]") {
+    auto stmt = parse_stmt("while i < 10 { let x = i }");
+    auto* loop = dynamic_cast<WhileStmt*>(stmt.get());
+    REQUIRE(loop != nullptr);
+
+    auto* cond = as_binary(loop->condition.get());
+    REQUIRE(cond->op.kind == TokenKind::Less);
+    REQUIRE(leaf_text(cond->left.get()) == "i");
+
+    auto* body = dynamic_cast<BlockStmt*>(loop->body.get());
+    REQUIRE(body != nullptr);
+    REQUIRE(body->statements.size() == 1);
+}
+
+TEST_CASE("a while condition goes through the full expression parser", "[parser]") {
+    // a && b should hang an && at the root of the condition.
+    auto stmt = parse_stmt("while a && b { let x = 1 }");
+    auto* loop = dynamic_cast<WhileStmt*>(stmt.get());
+    REQUIRE(loop != nullptr);
+
+    auto* cond = as_binary(loop->condition.get());
+    REQUIRE(cond->op.kind == TokenKind::AmpAmp);
+}
+
+TEST_CASE("a while with an empty body is allowed", "[parser]") {
+    auto stmt = parse_stmt("while running {}");
+    auto* loop = dynamic_cast<WhileStmt*>(stmt.get());
+    REQUIRE(loop != nullptr);
+
+    auto* body = dynamic_cast<BlockStmt*>(loop->body.get());
+    REQUIRE(body != nullptr);
+    REQUIRE(body->statements.empty());
+}
+
+TEST_CASE("a while missing its body brace is reported", "[parser]") {
+    REQUIRE_THROWS(parse_stmt("while a let x = 1 }"));
+}

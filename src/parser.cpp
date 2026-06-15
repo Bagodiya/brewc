@@ -89,8 +89,11 @@ std::unique_ptr<Stmt> Parser::parse_statement() {
     if (check(TokenKind::If)) {
         return parse_if_stmt();
     }
+    if (check(TokenKind::While)) {
+        return parse_while_stmt();
+    }
     // nothing else is wired up yet, so anything we don't recognise is a hard
-    // error for now. while/fn join the dispatch in the next few steps.
+    // error for now. fn joins the dispatch in the next step.
     throw std::runtime_error("expected a statement");
 }
 
@@ -121,6 +124,13 @@ std::unique_ptr<Stmt> Parser::parse_if_stmt() {
 
     return std::make_unique<IfStmt>(std::move(condition), std::move(then_branch),
                                     std::move(else_branch));
+}
+
+std::unique_ptr<Stmt> Parser::parse_while_stmt() {
+    advance(); // drop the `while` parse_statement peeked at.
+    auto condition = parse_expression();
+    auto body = parse_block();
+    return std::make_unique<WhileStmt>(std::move(condition), std::move(body));
 }
 
 std::unique_ptr<Stmt> Parser::parse_block() {

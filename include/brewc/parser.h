@@ -40,8 +40,12 @@ private:
     // chains fall out for free.
     std::unique_ptr<Stmt> parse_if_stmt();
 
+    // `while <cond> { ... }`. eats the keyword, reads the condition, then runs
+    // the body through parse_block just like the if branches do.
+    std::unique_ptr<Stmt> parse_while_stmt();
+
     // a `{ ... }` block. eats the braces and collects whatever statements sit
-    // between them. shared by if (and later while/fn) so they all agree on what
+    // between them. shared by if/while (and later fn) so they all agree on what
     // a block looks like.
     std::unique_ptr<Stmt> parse_block();
 
