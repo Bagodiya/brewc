@@ -92,8 +92,10 @@ std::unique_ptr<Stmt> Parser::parse_statement() {
     if (check(TokenKind::While)) {
         return parse_while_stmt();
     }
-    // nothing else is wired up yet, so anything we don't recognise is a hard
-    // error for now. fn joins the dispatch in the next step.
+    if (check(TokenKind::Fn)) {
+        return parse_fn_decl();
+    }
+    // anything we don't recognise is a hard error for now.
     throw std::runtime_error("expected a statement");
 }
 
@@ -131,6 +133,27 @@ std::unique_ptr<Stmt> Parser::parse_while_stmt() {
     auto condition = parse_expression();
     auto body = parse_block();
     return std::make_unique<WhileStmt>(std::move(condition), std::move(body));
+}
+
+std::unique_ptr<Stmt> Parser::parse_fn_decl() {
+    advance(); // drop the `fn` parse_statement peeked at.
+    const Token& name = consume(TokenKind::Identifier,
+                                "expected a name after 'fn'");
+
+    consume(TokenKind::LParen, "expected '(' after the function name");
+    std::vector<Token> params;
+    // an empty list (`fn main()`) is fine, so only read names while we're not
+    // already sitting on the closing paren.
+    if (!check(TokenKind::RParen)) {
+        do {
+            params.push_back(consume(TokenKind::Identifier,
+                                     "expected a parameter name"));
+        } while (match(TokenKind::Comma));
+    }
+    consume(TokenKind::RParen, "expected ')' after the parameter list");
+
+    auto body = parse_block();
+    return std::make_unique<FnDecl>(name, std::move(params), std::move(body));
 }
 
 std::unique_ptr<Stmt> Parser::parse_block() {

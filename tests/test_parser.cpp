@@ -414,3 +414,56 @@ TEST_CASE("a while with an empty body is allowed", "[parser]") {
 TEST_CASE("a while missing its body brace is reported", "[parser]") {
     REQUIRE_THROWS(parse_stmt("while a let x = 1 }"));
 }
+
+TEST_CASE("parses a no-arg function", "[parser]") {
+    auto stmt = parse_stmt("fn main() { let x = 1 }");
+    auto* fn = dynamic_cast<FnDecl*>(stmt.get());
+    REQUIRE(fn != nullptr);
+    REQUIRE(fn->name == "main");
+    REQUIRE(fn->params.empty());
+
+    auto* body = dynamic_cast<BlockStmt*>(fn->body.get());
+    REQUIRE(body != nullptr);
+    REQUIRE(body->statements.size() == 1);
+}
+
+TEST_CASE("parses a function with one parameter", "[parser]") {
+    auto stmt = parse_stmt("fn square(n) { let r = n * n }");
+    auto* fn = dynamic_cast<FnDecl*>(stmt.get());
+    REQUIRE(fn != nullptr);
+    REQUIRE(fn->name == "square");
+    REQUIRE(fn->params.size() == 1);
+    REQUIRE(fn->params[0].lexeme == "n");
+}
+
+TEST_CASE("parses a function with several parameters", "[parser]") {
+    auto stmt = parse_stmt("fn add(a, b, c) { let s = a + b }");
+    auto* fn = dynamic_cast<FnDecl*>(stmt.get());
+    REQUIRE(fn != nullptr);
+    REQUIRE(fn->params.size() == 3);
+    REQUIRE(fn->params[0].lexeme == "a");
+    REQUIRE(fn->params[1].lexeme == "b");
+    REQUIRE(fn->params[2].lexeme == "c");
+}
+
+TEST_CASE("a function body can be empty", "[parser]") {
+    auto stmt = parse_stmt("fn noop() {}");
+    auto* fn = dynamic_cast<FnDecl*>(stmt.get());
+    REQUIRE(fn != nullptr);
+
+    auto* body = dynamic_cast<BlockStmt*>(fn->body.get());
+    REQUIRE(body != nullptr);
+    REQUIRE(body->statements.empty());
+}
+
+TEST_CASE("a function without a name is reported", "[parser]") {
+    REQUIRE_THROWS(parse_stmt("fn () { let x = 1 }"));
+}
+
+TEST_CASE("a function missing its parens is reported", "[parser]") {
+    REQUIRE_THROWS(parse_stmt("fn main { let x = 1 }"));
+}
+
+TEST_CASE("a trailing comma in the parameter list is reported", "[parser]") {
+    REQUIRE_THROWS(parse_stmt("fn add(a, b,) { let x = 1 }"));
+}

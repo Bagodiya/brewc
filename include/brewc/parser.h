@@ -44,6 +44,11 @@ private:
     // the body through parse_block just like the if branches do.
     std::unique_ptr<Stmt> parse_while_stmt();
 
+    // `fn name(a, b) { ... }`. eats the keyword and the name, reads the comma
+    // separated parameter list inside the parens (which can be empty), then the
+    // body comes through parse_block so it lines up with the other blocks.
+    std::unique_ptr<Stmt> parse_fn_decl();
+
     // a `{ ... }` block. eats the braces and collects whatever statements sit
     // between them. shared by if/while (and later fn) so they all agree on what
     // a block looks like.
