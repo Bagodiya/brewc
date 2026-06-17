@@ -467,3 +467,92 @@ TEST_CASE("a function missing its parens is reported", "[parser]") {
 TEST_CASE("a trailing comma in the parameter list is reported", "[parser]") {
     REQUIRE_THROWS(parse_stmt("fn add(a, b,) { let x = 1 }"));
 }
+
+namespace {
+
+// grab a CallExpr off an Expr* or fail the test. mirrors as_binary/as_unary so
+// the call tests stay short.
+CallExpr* as_call(Expr* expr) {
+    auto* call = dynamic_cast<CallExpr*>(expr);
+    REQUIRE(call != nullptr);
+    return call;
+}
+
+} // namespace
+
+TEST_CASE("parses a call with no arguments", "[parser]") {
+    auto expr = parse_expr("now()");
+    auto* call = as_call(expr.get());
+    REQUIRE(call->args.empty());
+
+    auto* callee = dynamic_cast<IdentifierExpr*>(call->callee.get());
+    REQUIRE(callee != nullptr);
+    REQUIRE(callee->name == "now");
+}
+
+TEST_CASE("parses a call with one argument", "[parser]") {
+    auto expr = parse_expr("square(5)");
+    auto* call = as_call(expr.get());
+    REQUIRE(call->args.size() == 1);
+    REQUIRE(leaf_text(call->args[0].get()) == "5");
+}
+
+TEST_CASE("parses a call with several arguments", "[parser]") {
+    auto expr = parse_expr("add(a, b, c)");
+    auto* call = as_call(expr.get());
+    REQUIRE(call->args.size() == 3);
+    REQUIRE(leaf_text(call->args[0].get()) == "a");
+    REQUIRE(leaf_text(call->args[1].get()) == "b");
+    REQUIRE(leaf_text(call->args[2].get()) == "c");
+}
+
+TEST_CASE("an argument can be a whole expression", "[parser]") {
+    // the argument should go through the full expression parser, so 1 + 2 hangs
+    // a + under the call instead of being split into two arguments.
+    auto expr = parse_expr("print(1 + 2)");
+    auto* call = as_call(expr.get());
+    REQUIRE(call->args.size() == 1);
+
+    auto* arg = as_binary(call->args[0].get());
+    REQUIRE(arg->op.kind == TokenKind::Plus);
+}
+
+TEST_CASE("a call can be passed as an argument", "[parser]") {
+    auto expr = parse_expr("outer(inner(x))");
+    auto* outer = as_call(expr.get());
+    REQUIRE(outer->args.size() == 1);
+
+    auto* inner = as_call(outer->args[0].get());
+    REQUIRE(inner->args.size() == 1);
+    REQUIRE(leaf_text(inner->args[0].get()) == "x");
+}
+
+TEST_CASE("chained calls nest the earlier one inside", "[parser]") {
+    // f()() should put the first call as the callee of the second.
+    auto expr = parse_expr("f()()");
+    auto* outer = as_call(expr.get());
+    REQUIRE(outer->args.empty());
+
+    auto* inner = as_call(outer->callee.get());
+    REQUIRE(inner->args.empty());
+
+    auto* base = dynamic_cast<IdentifierExpr*>(inner->callee.get());
+    REQUIRE(base != nullptr);
+    REQUIRE(base->name == "f");
+}
+
+TEST_CASE("a call binds tighter than a prefix operator", "[parser]") {
+    // -foo() should negate the result of the call, so the unary sits on top.
+    auto expr = parse_expr("-foo()");
+    auto* un = as_unary(expr.get());
+    REQUIRE(un->op.kind == TokenKind::Minus);
+    REQUIRE(dynamic_cast<CallExpr*>(un->operand.get()) != nullptr);
+}
+
+TEST_CASE("a call missing its closing paren is reported", "[parser]") {
+    REQUIRE_THROWS(parse_expr("foo(1, 2"));
+}
+
+TEST_CASE("a trailing comma in an argument list is reported", "[parser]") {
+    REQUIRE_THROWS(parse_expr("foo(a,)"));
+}

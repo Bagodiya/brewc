@@ -64,6 +64,12 @@ private:
     // applies to the whole primary that follows it.
     std::unique_ptr<Expr> parse_unary();
 
+    // postfix call syntax: `foo(1, 2)`. parses a primary first, then keeps
+    // wrapping it in a CallExpr for every `(...)` that follows so `f()()` chains
+    // fold left. sits just under parse_unary so the call grabs its arguments
+    // before a prefix operator gets to the result.
+    std::unique_ptr<Expr> parse_call();
+
     // the smallest pieces: literals, names, and a parenthesised expression.
     std::unique_ptr<Expr> parse_primary();
 

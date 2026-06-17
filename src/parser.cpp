@@ -203,7 +203,33 @@ std::unique_ptr<Expr> Parser::parse_unary() {
         auto operand = parse_unary();
         return std::make_unique<UnaryExpr>(std::move(op), std::move(operand));
     }
-    return parse_primary();
+    return parse_call();
+}
+
+std::unique_ptr<Expr> Parser::parse_call() {
+    auto expr = parse_primary();
+
+    // keep eating `(...)` groups so a chain like `f()()` ends up nested with the
+    // earlier call on the inside. one iteration handles one set of parens.
+    while (check(TokenKind::LParen)) {
+        Token paren = advance();
+
+        std::vector<std::unique_ptr<Expr>> args;
+        // `f()` has no arguments, so only read any if we're not already at the
+        // closing paren. each argument is a full expression, which is what lets
+        // calls show up as arguments to other calls.
+        if (!check(TokenKind::RParen)) {
+            do {
+                args.push_back(parse_expression());
+            } while (match(TokenKind::Comma));
+        }
+        consume(TokenKind::RParen, "expected ')' after the argument list");
+
+        expr = std::make_unique<CallExpr>(std::move(expr), std::move(paren),
+                                          std::move(args));
+    }
+
+    return expr;
 }
 
 std::unique_ptr<Expr> Parser::parse_primary() {
