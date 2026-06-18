@@ -556,3 +556,54 @@ TEST_CASE("a call missing its closing paren is reported", "[parser]") {
 TEST_CASE("a trailing comma in an argument list is reported", "[parser]") {
     REQUIRE_THROWS(parse_expr("foo(a,)"));
 }
+
+TEST_CASE("a syntax error carries the line and column of the bad token", "[parser]") {
+    // the `=` sits where a name should be, at column 5 of the only line.
+    try {
+        parse_stmt("let = 5");
+        FAIL("expected the parser to throw");
+    } catch (const ParseError& err) {
+        REQUIRE(err.line() == 1);
+        REQUIRE(err.column() == 5);
+    }
+}
+
+TEST_CASE("the error message mentions the location and the reason", "[parser]") {
+    try {
+        parse_stmt("let x 5");
+        FAIL("expected the parser to throw");
+    } catch (const ParseError& err) {
+        std::string what = err.what();
+        REQUIRE(what.find("line 1") != std::string::npos);
+        REQUIRE(what.find("'='") != std::string::npos);
+    }
+}
+
+TEST_CASE("a thrown parse error is a ParseError", "[parser]") {
+    REQUIRE_THROWS_AS(parse_expr("(1"), ParseError);
+}
+
+TEST_CASE("parse_program recovers and reports every broken statement", "[parser]") {
+    // first let is missing its name, the second is fine, the third has no '='.
+    // recovery should let us see both errors instead of just the first one.
+    Parser parser(lex_all("let = 1 let ok = 2 let y 3"));
+    auto program = parser.parse_program();
+
+    REQUIRE(parser.errors().size() == 2);
+    // the good statement in the middle should still make it into the tree.
+    bool has_let = false;
+    for (auto& stmt : program) {
+        if (dynamic_cast<LetStmt*>(stmt.get()) != nullptr) {
+            has_let = true;
+        }
+    }
+    REQUIRE(has_let);
+}
+
+TEST_CASE("parse_program leaves errors empty on clean input", "[parser]") {
+    Parser parser(lex_all("let x = 1 let y = 2"));
+    auto program = parser.parse_program();
+
+    REQUIRE(parser.errors().empty());
+    REQUIRE(program.size() == 2);
+}

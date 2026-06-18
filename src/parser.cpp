@@ -1,8 +1,23 @@
 #include "brewc/parser.h"
 
-#include <stdexcept>
+#include <string>
 
 namespace brewc {
+
+namespace {
+
+// stick the line/column on the front of the message so a printed ParseError
+// reads like "line 2:5: expected '=' ..." without the caller doing the work.
+std::string with_location(int line, int column, const std::string& message) {
+    return "line " + std::to_string(line) + ":" + std::to_string(column) + ": " +
+           message;
+}
+
+} // namespace
+
+ParseError::ParseError(int line, int column, const std::string& message)
+    : std::runtime_error(with_location(line, column, message)),
+      line_(line), column_(column) {}
 
 Parser::Parser(std::vector<Token> tokens)
     : tokens_(std::move(tokens)), current_(0) {}
@@ -45,8 +60,35 @@ const Token& Parser::consume(TokenKind kind, const std::string& message) {
     if (check(kind)) {
         return advance();
     }
-    // placeholder until step 31 wires up real diagnostics with line/column.
-    throw std::runtime_error(message);
+    // point the error at whatever we actually found, not where we wish we were.
+    throw error_at(peek(), message);
+}
+
+ParseError Parser::error_at(const Token& tok, const std::string& message) const {
+    return ParseError(tok.line, tok.column, message);
+}
+
+void Parser::synchronize() {
+    advance(); // step over the token that tripped us up in the first place.
+
+    while (!is_at_end()) {
+        // a semicolon closes off a statement, so the next token is a clean start.
+        if (previous().kind == TokenKind::Semicolon) {
+            return;
+        }
+        // these keywords can only ever begin a new statement, so seeing one means
+        // we've found our footing again.
+        switch (peek().kind) {
+        case TokenKind::Let:
+        case TokenKind::Fn:
+        case TokenKind::If:
+        case TokenKind::While:
+        case TokenKind::Return:
+            return;
+        default:
+            advance();
+        }
+    }
 }
 
 namespace {
@@ -82,6 +124,24 @@ int binary_precedence(TokenKind kind) {
 
 } // namespace
 
+std::vector<std::unique_ptr<Stmt>> Parser::parse_program() {
+    errors_.clear();
+    std::vector<std::unique_ptr<Stmt>> statements;
+
+    while (!is_at_end()) {
+        try {
+            statements.push_back(parse_statement());
+        } catch (const ParseError& err) {
+            // don't bail on the first mistake — record it and skip ahead so we
+            // can still report whatever else is broken further down the file.
+            errors_.push_back(err);
+            synchronize();
+        }
+    }
+
+    return statements;
+}
+
 std::unique_ptr<Stmt> Parser::parse_statement() {
     if (check(TokenKind::Let)) {
         return parse_let_stmt();
@@ -95,8 +155,8 @@ std::unique_ptr<Stmt> Parser::parse_statement() {
     if (check(TokenKind::Fn)) {
         return parse_fn_decl();
     }
-    // anything we don't recognise is a hard error for now.
-    throw std::runtime_error("expected a statement");
+    // nothing here can begin a statement, so flag the token we're stuck on.
+    throw error_at(peek(), "expected a statement");
 }
 
 std::unique_ptr<Stmt> Parser::parse_let_stmt() {
@@ -255,7 +315,7 @@ std::unique_ptr<Expr> Parser::parse_primary() {
         return inner;
     }
 
-    throw std::runtime_error("expected an expression");
+    throw error_at(peek(), "expected an expression");
 }
 
 } // namespace brewc

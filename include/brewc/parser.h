@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,22 @@
 
 namespace brewc {
 
+// thrown when the parser trips over something it can't make a tree out of. it
+// remembers where in the source the trouble was so the driver can point right
+// at the offending token instead of just saying "syntax error" somewhere.
+// the what() string already has the location baked in, so printing it is enough.
+class ParseError : public std::runtime_error {
+public:
+    ParseError(int line, int column, const std::string& message);
+
+    int line() const { return line_; }
+    int column() const { return column_; }
+
+private:
+    int line_;
+    int column_;
+};
+
 // recursive descent parser. it walks the flat list of tokens the lexer produced
 // and builds the AST out of it. this step is just the skeleton — the navigation
 // helpers below are what every parse_* method (coming in the next steps) leans
@@ -18,6 +35,17 @@ namespace brewc {
 class Parser {
 public:
     explicit Parser(std::vector<Token> tokens);
+
+    // parse a whole file: keep pulling statements off the front until the tokens
+    // run out. when one statement blows up we stash the error, skip to the next
+    // likely statement boundary, and carry on, so a single typo doesn't hide
+    // every later mistake. check errors() afterwards to see if anything went
+    // wrong — a non-empty list means the returned tree is only the parts we
+    // managed to recover.
+    std::vector<std::unique_ptr<Stmt>> parse_program();
+
+    // the errors collected during the last parse_program run, in source order.
+    const std::vector<ParseError>& errors() const { return errors_; }
 
     // parse a single statement and hand back the tree for it. right now the only
     // statement we know about is `let`, but this is the spot every other kind
@@ -86,14 +114,25 @@ private:
     // if the current token matches, eat it and return true; otherwise leave the
     // cursor alone and return false. this is the workhorse for optional bits.
     bool match(TokenKind kind);
-    // like match but mandatory: the token has to be there. for now a mismatch
-    // throws — proper error reporting with locations comes in a later step.
+    // like match but mandatory: the token has to be there. if it isn't, this
+    // throws a ParseError pointed at the current token with the given message.
     const Token& consume(TokenKind kind, const std::string& message);
+
+    // build a ParseError that points at `tok`. every throw site funnels through
+    // here so the location handling lives in one spot.
+    ParseError error_at(const Token& tok, const std::string& message) const;
+
+    // panic-mode recovery. after an error we're sitting at a token we couldn't
+    // use, so drop tokens until we're past a `;` or right before a keyword that
+    // can only start a fresh statement. that resyncs us to a clean boundary and
+    // keeps the next parse_statement from choking on the same garbage.
+    void synchronize();
 
     bool is_at_end() const;
 
     std::vector<Token> tokens_;
     std::size_t current_;
+    std::vector<ParseError> errors_;
 };
 
 } // namespace brewc
