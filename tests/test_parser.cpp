@@ -607,3 +607,158 @@ TEST_CASE("parse_program leaves errors empty on clean input", "[parser]") {
     REQUIRE(parser.errors().empty());
     REQUIRE(program.size() == 2);
 }
+
+namespace {
+
+// poking at the tree with dynamic_cast one node at a time is fine for spotting a
+// single shape, but for a whole program it gets noisy fast. so here's a tiny
+// visitor that flattens the tree into one S-expression string. the snapshot
+// tests below just parse a program and check the string matches, which catches
+// any change to the shape — a swapped operand, a dropped else, wrong nesting —
+// in one comparison. the real pretty-printer comes in a later step; this one is
+// deliberately small and lives here so the tests don't depend on it yet.
+class Stringifier : public Visitor, public StmtVisitor {
+public:
+    // run a single expression through and hand back the text it produced.
+    std::string of(Expr& expr) {
+        expr.accept(*this);
+        return out_;
+    }
+
+    // same but for a statement.
+    std::string of(Stmt& stmt) {
+        stmt.accept(*this);
+        return out_;
+    }
+
+    void visit_literal(LiteralExpr& expr) override { out_ = expr.token.lexeme; }
+
+    void visit_identifier(IdentifierExpr& expr) override { out_ = expr.name; }
+
+    void visit_binary(BinaryExpr& expr) override {
+        std::string l = of(*expr.left);
+        std::string r = of(*expr.right);
+        out_ = "(" + expr.op.lexeme + " " + l + " " + r + ")";
+    }
+
+    void visit_unary(UnaryExpr& expr) override {
+        out_ = "(" + expr.op.lexeme + " " + of(*expr.operand) + ")";
+    }
+
+    void visit_call(CallExpr& expr) override {
+        std::string s = "(call " + of(*expr.callee);
+        for (auto& arg : expr.args) {
+            s += " " + of(*arg);
+        }
+        out_ = s + ")";
+    }
+
+    void visit_let(LetStmt& stmt) override {
+        out_ = "(let " + stmt.name + " " + of(*stmt.initializer) + ")";
+    }
+
+    void visit_if(IfStmt& stmt) override {
+        std::string s = "(if " + of(*stmt.condition) + " " + of(*stmt.then_branch);
+        if (stmt.else_branch) {
+            s += " " + of(*stmt.else_branch);
+        }
+        out_ = s + ")";
+    }
+
+    void visit_while(WhileStmt& stmt) override {
+        out_ = "(while " + of(*stmt.condition) + " " + of(*stmt.body) + ")";
+    }
+
+    void visit_block(BlockStmt& stmt) override {
+        std::string s = "(block";
+        for (auto& inner : stmt.statements) {
+            s += " " + of(*inner);
+        }
+        out_ = s + ")";
+    }
+
+    void visit_fn(FnDecl& stmt) override {
+        std::string s = "(fn " + stmt.name + " (";
+        for (std::size_t i = 0; i < stmt.params.size(); ++i) {
+            if (i != 0) {
+                s += " ";
+            }
+            s += stmt.params[i].lexeme;
+        }
+        out_ = s + ") " + of(*stmt.body) + ")";
+    }
+
+private:
+    std::string out_;
+};
+
+// lex + parse + flatten an expression in one call.
+std::string snapshot_expr(const std::string& source) {
+    auto expr = parse_expr(source);
+    Stringifier s;
+    return s.of(*expr);
+}
+
+// same for a statement.
+std::string snapshot_stmt(const std::string& source) {
+    auto stmt = parse_stmt(source);
+    Stringifier s;
+    return s.of(*stmt);
+}
+
+} // namespace
+
+TEST_CASE("snapshot: arithmetic keeps the precedence nesting", "[parser][snapshot]") {
+    REQUIRE(snapshot_expr("1 + 2 * 3 - 4") == "(- (+ 1 (* 2 3)) 4)");
+}
+
+TEST_CASE("snapshot: unary and call nest the way we expect", "[parser][snapshot]") {
+    REQUIRE(snapshot_expr("-foo(a, b + 1)") == "(- (call foo a (+ b 1)))");
+}
+
+TEST_CASE("snapshot: mixed logical and comparison operators", "[parser][snapshot]") {
+    REQUIRE(snapshot_expr("a < b && c == d || e") ==
+            "(|| (&& (< a b) (== c d)) e)");
+}
+
+TEST_CASE("snapshot: a let with a compound initializer", "[parser][snapshot]") {
+    REQUIRE(snapshot_stmt("let total = (a + b) * 2") ==
+            "(let total (* (+ a b) 2))");
+}
+
+TEST_CASE("snapshot: an if/else with blocks on both sides", "[parser][snapshot]") {
+    REQUIRE(snapshot_stmt("if x < 10 { let y = 1 } else { let y = 2 }") ==
+            "(if (< x 10) (block (let y 1)) (block (let y 2)))");
+}
+
+TEST_CASE("snapshot: an else if chain stays nested", "[parser][snapshot]") {
+    REQUIRE(snapshot_stmt("if a { let x = 1 } else if b { let y = 2 } else { let z = 3 }") ==
+            "(if a (block (let x 1)) (if b (block (let y 2)) (block (let z 3))))");
+}
+
+TEST_CASE("snapshot: a while loop with a compound body", "[parser][snapshot]") {
+    REQUIRE(snapshot_stmt("while i < n { let i = i + 1 }") ==
+            "(while (< i n) (block (let i (+ i 1))))");
+}
+
+TEST_CASE("snapshot: a function with params and a body", "[parser][snapshot]") {
+    REQUIRE(snapshot_stmt("fn add(a, b) { let s = a + b }") ==
+            "(fn add (a b) (block (let s (+ a b))))");
+}
+
+TEST_CASE("snapshot: a whole program flattens statement by statement", "[parser][snapshot]") {
+    Parser parser(lex_all("let x = 1 fn dbl(n) { let r = n * 2 } while x < 3 { let x = x + 1 }"));
+    auto program = parser.parse_program();
+    REQUIRE(parser.errors().empty());
+
+    Stringifier s;
+    std::vector<std::string> shapes;
+    for (auto& stmt : program) {
+        shapes.push_back(s.of(*stmt));
+    }
+
+    REQUIRE(shapes.size() == 3);
+    REQUIRE(shapes[0] == "(let x 1)");
+    REQUIRE(shapes[1] == "(fn dbl (n) (block (let r (* n 2))))");
+    REQUIRE(shapes[2] == "(while (< x 3) (block (let x (+ x 1))))");
+}
