@@ -20,6 +20,7 @@ add_executable(brewc
     src/main.cpp
     src/lexer.cpp
     src/parser.cpp
+    src/ast_printer.cpp
 )
 target_include_directories(brewc PRIVATE include)
 
