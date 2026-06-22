@@ -15,11 +15,13 @@ add_executable(brewc_tests
     test_ast_printer.cpp
     test_value.cpp
     test_environment.cpp
+    test_interpreter.cpp
     ${CMAKE_SOURCE_DIR}/src/lexer.cpp
     ${CMAKE_SOURCE_DIR}/src/parser.cpp
     ${CMAKE_SOURCE_DIR}/src/ast_printer.cpp
     ${CMAKE_SOURCE_DIR}/src/value.cpp
     ${CMAKE_SOURCE_DIR}/src/environment.cpp
+    ${CMAKE_SOURCE_DIR}/src/interpreter.cpp
 )
 
 target_link_libraries(brewc_tests PRIVATE Catch2::Catch2WithMain)

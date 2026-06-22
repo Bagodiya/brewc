@@ -23,6 +23,7 @@ add_executable(brewc
     src/ast_printer.cpp
     src/value.cpp
     src/environment.cpp
+    src/interpreter.cpp
     src/repl.cpp
 )
 target_include_directories(brewc PRIVATE include)
