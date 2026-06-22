@@ -1,8 +1,7 @@
-#include <iostream>
+#include "brewc/repl.h"
 
 int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
-    std::cout << "brewc 0.0.1" << std::endl;
-    return 0;
+    return brewc::run_repl();
 }

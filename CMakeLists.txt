@@ -21,6 +21,7 @@ add_executable(brewc
     src/lexer.cpp
     src/parser.cpp
     src/ast_printer.cpp
+    src/repl.cpp
 )
 target_include_directories(brewc PRIVATE include)
 
