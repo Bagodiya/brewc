@@ -41,12 +41,13 @@ public:
     void visit_block(BlockStmt& stmt) override;
     void visit_fn(FnDecl& stmt) override;
 
-private:
     // walk one expression and hand back whatever it evaluated to. internally it
-    // runs accept() and then reads result_ — keeps the visit_* bodies from
-    // having to touch the shared slot by hand.
+    // runs accept() and then reads result_, which keeps the visit_* bodies from
+    // having to touch the shared slot by hand. it's public so the REPL and the
+    // tests can evaluate a single expression without running a whole program.
     Value evaluate(Expr& expr);
 
+private:
     // run one statement for its effect. thin wrapper around accept() so the
     // statement side reads the same way the expression side does.
     void execute(Stmt& stmt);

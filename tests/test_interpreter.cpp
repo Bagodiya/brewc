@@ -34,12 +34,13 @@ std::vector<std::unique_ptr<Stmt>> parse_program(const std::string& source) {
     return parser.parse_program();
 }
 
-} // namespace
+// build a literal node straight from a token so we can hand it to evaluate()
+// without dragging a whole let-statement through the parser first.
+std::unique_ptr<LiteralExpr> literal(TokenKind kind, const std::string& text) {
+    return std::make_unique<LiteralExpr>(Token(kind, text, 1, 1));
+}
 
-// the visit_* bodies are still stubs at this step, so there is no observable
-// result to check yet. for now just pin down that the scaffold links and that
-// running a program drives every statement without falling over. the real
-// behaviour checks land alongside the evaluation steps that follow.
+} // namespace
 
 TEST_CASE("interpreting an empty program is a no-op", "[interp]") {
     Interpreter interp;
@@ -53,4 +54,50 @@ TEST_CASE("interpreter walks a parsed program without error", "[interp]") {
 
     Interpreter interp;
     REQUIRE_NOTHROW(interp.interpret(program));
+}
+
+TEST_CASE("integer literal evaluates to an int value", "[interp]") {
+    Interpreter interp;
+    auto node = literal(TokenKind::Integer, "42");
+    Value v = interp.evaluate(*node);
+    REQUIRE(is_int(v));
+    REQUIRE(std::get<int64_t>(v) == 42);
+}
+
+TEST_CASE("float literal evaluates to a double value", "[interp]") {
+    Interpreter interp;
+    auto node = literal(TokenKind::Float, "3.5");
+    Value v = interp.evaluate(*node);
+    REQUIRE(is_float(v));
+    REQUIRE(std::get<double>(v) == 3.5);
+}
+
+TEST_CASE("string literal evaluates to its text", "[interp]") {
+    Interpreter interp;
+    // the lexer hands strings over already unquoted, so the lexeme is the body.
+    auto node = literal(TokenKind::String, "hello");
+    Value v = interp.evaluate(*node);
+    REQUIRE(is_string(v));
+    REQUIRE(std::get<std::string>(v) == "hello");
+}
+
+TEST_CASE("true and false literals evaluate to bools", "[interp]") {
+    Interpreter interp;
+
+    auto yes = literal(TokenKind::True, "true");
+    Value tv = interp.evaluate(*yes);
+    REQUIRE(is_bool(tv));
+    REQUIRE(std::get<bool>(tv) == true);
+
+    auto no = literal(TokenKind::False, "false");
+    Value fv = interp.evaluate(*no);
+    REQUIRE(is_bool(fv));
+    REQUIRE(std::get<bool>(fv) == false);
+}
+
+TEST_CASE("nil literal evaluates to nil", "[interp]") {
+    Interpreter interp;
+    auto node = literal(TokenKind::Nil, "nil");
+    Value v = interp.evaluate(*node);
+    REQUIRE(is_nil(v));
 }
