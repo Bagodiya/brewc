@@ -1,8 +1,57 @@
 #include "brewc/interpreter.h"
 
+#include <stdexcept>
 #include <string>
 
 namespace brewc {
+
+namespace {
+
+// the int and float cases share the same shape, so each gets its own little
+// helper instead of one big switch that has to keep re-checking the operand
+// types. division and modulo by zero on ints would be undefined behaviour, so
+// those two are guarded; the float side just lets IEEE produce inf/nan.
+int64_t apply_int(TokenKind op, int64_t a, int64_t b) {
+    switch (op) {
+    case TokenKind::Plus:
+        return a + b;
+    case TokenKind::Minus:
+        return a - b;
+    case TokenKind::Star:
+        return a * b;
+    case TokenKind::Slash:
+        if (b == 0) {
+            throw std::runtime_error("division by zero");
+        }
+        return a / b;
+    case TokenKind::Percent:
+        if (b == 0) {
+            throw std::runtime_error("modulo by zero");
+        }
+        return a % b;
+    default:
+        throw std::runtime_error("operator is not arithmetic");
+    }
+}
+
+double apply_float(TokenKind op, double a, double b) {
+    switch (op) {
+    case TokenKind::Plus:
+        return a + b;
+    case TokenKind::Minus:
+        return a - b;
+    case TokenKind::Star:
+        return a * b;
+    case TokenKind::Slash:
+        return a / b;
+    default:
+        // there's no sensible float modulo here, and that's the only operator
+        // that falls through to this point.
+        throw std::runtime_error("operator is not valid on floats");
+    }
+}
+
+} // namespace
 
 void Interpreter::interpret(std::vector<std::unique_ptr<Stmt>>& program) {
     for (auto& stmt : program) {
@@ -22,8 +71,7 @@ void Interpreter::execute(Stmt& stmt) {
 }
 
 // the rest are still stubs for now. they get real bodies over the next few
-// steps (arithmetic next, then the rest). the casts to void just keep
-// -Wunused-parameter quiet until then.
+// steps. the casts to void just keep -Wunused-parameter quiet until then.
 
 // turn a literal token into the runtime value it stands for. the lexer already
 // did the hard part: number tokens carry the digits as their lexeme and string
@@ -59,8 +107,25 @@ void Interpreter::visit_identifier(IdentifierExpr& expr) {
     (void)expr;
 }
 
+// evaluate both sides first, then run the operator. arithmetic only makes sense
+// on numbers right now, so two ints give an int and two floats give a float.
+// mixing the two (or throwing a string/bool in) is an error for now — promotion
+// and string handling land in their own later steps.
 void Interpreter::visit_binary(BinaryExpr& expr) {
-    (void)expr;
+    Value lhs = evaluate(*expr.left);
+    Value rhs = evaluate(*expr.right);
+
+    if (is_int(lhs) && is_int(rhs)) {
+        result_ = apply_int(expr.op.kind, std::get<int64_t>(lhs), std::get<int64_t>(rhs));
+        return;
+    }
+    if (is_float(lhs) && is_float(rhs)) {
+        result_ = apply_float(expr.op.kind, std::get<double>(lhs), std::get<double>(rhs));
+        return;
+    }
+
+    throw std::runtime_error("cannot apply '" + expr.op.lexeme + "' to " + type_name(lhs) +
+                             " and " + type_name(rhs));
 }
 
 void Interpreter::visit_unary(UnaryExpr& expr) {
