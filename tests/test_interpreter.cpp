@@ -176,3 +176,81 @@ TEST_CASE("arithmetic on non-numbers is an error", "[interp]") {
     auto bad = binary(int_lit("1"), TokenKind::Plus, "+", std::move(text));
     REQUIRE_THROWS_AS(interp.evaluate(*bad), std::runtime_error);
 }
+
+TEST_CASE("less-than on ints gives a bool", "[interp]") {
+    Interpreter interp;
+
+    auto lt = binary(int_lit("2"), TokenKind::Less, "<", int_lit("5"));
+    Value v = interp.evaluate(*lt);
+    REQUIRE(is_bool(v));
+    REQUIRE(std::get<bool>(v) == true);
+
+    auto notlt = binary(int_lit("5"), TokenKind::Less, "<", int_lit("2"));
+    REQUIRE(std::get<bool>(interp.evaluate(*notlt)) == false);
+}
+
+TEST_CASE("the rest of the relational operators on ints", "[interp]") {
+    Interpreter interp;
+
+    auto gt = binary(int_lit("9"), TokenKind::Greater, ">", int_lit("4"));
+    REQUIRE(std::get<bool>(interp.evaluate(*gt)) == true);
+
+    auto le = binary(int_lit("3"), TokenKind::LessEqual, "<=", int_lit("3"));
+    REQUIRE(std::get<bool>(interp.evaluate(*le)) == true);
+
+    auto ge = binary(int_lit("2"), TokenKind::GreaterEqual, ">=", int_lit("8"));
+    REQUIRE(std::get<bool>(interp.evaluate(*ge)) == false);
+}
+
+TEST_CASE("equality and inequality on ints", "[interp]") {
+    Interpreter interp;
+
+    auto eq = binary(int_lit("7"), TokenKind::EqualEqual, "==", int_lit("7"));
+    REQUIRE(std::get<bool>(interp.evaluate(*eq)) == true);
+
+    auto ne = binary(int_lit("7"), TokenKind::BangEqual, "!=", int_lit("7"));
+    REQUIRE(std::get<bool>(interp.evaluate(*ne)) == false);
+}
+
+TEST_CASE("comparing floats works the same way", "[interp]") {
+    Interpreter interp;
+    auto lhs = literal(TokenKind::Float, "1.5");
+    auto rhs = literal(TokenKind::Float, "2.5");
+    auto lt = binary(std::move(lhs), TokenKind::Less, "<", std::move(rhs));
+    Value v = interp.evaluate(*lt);
+    REQUIRE(is_bool(v));
+    REQUIRE(std::get<bool>(v) == true);
+}
+
+TEST_CASE("strings compare by value with == and !=", "[interp]") {
+    Interpreter interp;
+
+    auto same = binary(literal(TokenKind::String, "hi"), TokenKind::EqualEqual, "==",
+                       literal(TokenKind::String, "hi"));
+    REQUIRE(std::get<bool>(interp.evaluate(*same)) == true);
+
+    auto diff = binary(literal(TokenKind::String, "hi"), TokenKind::BangEqual, "!=",
+                       literal(TokenKind::String, "bye"));
+    REQUIRE(std::get<bool>(interp.evaluate(*diff)) == true);
+}
+
+TEST_CASE("bools compare for equality", "[interp]") {
+    Interpreter interp;
+    auto eq = binary(literal(TokenKind::True, "true"), TokenKind::EqualEqual, "==",
+                     literal(TokenKind::False, "false"));
+    REQUIRE(std::get<bool>(interp.evaluate(*eq)) == false);
+}
+
+TEST_CASE("values of different types are never equal", "[interp]") {
+    Interpreter interp;
+    auto eq = binary(int_lit("1"), TokenKind::EqualEqual, "==",
+                     literal(TokenKind::String, "1"));
+    REQUIRE(std::get<bool>(interp.evaluate(*eq)) == false);
+}
+
+TEST_CASE("ordering values that can't be ordered is an error", "[interp]") {
+    Interpreter interp;
+    auto bad = binary(literal(TokenKind::String, "a"), TokenKind::Less, "<",
+                      literal(TokenKind::String, "b"));
+    REQUIRE_THROWS_AS(interp.evaluate(*bad), std::runtime_error);
+}

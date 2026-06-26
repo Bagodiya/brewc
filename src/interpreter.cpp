@@ -51,6 +51,79 @@ double apply_float(TokenKind op, double a, double b) {
     }
 }
 
+bool is_comparison(TokenKind op) {
+    switch (op) {
+    case TokenKind::EqualEqual:
+    case TokenKind::BangEqual:
+    case TokenKind::Less:
+    case TokenKind::Greater:
+    case TokenKind::LessEqual:
+    case TokenKind::GreaterEqual:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// all six comparisons for one number type. ints and floats both run through here
+// because the operators mean the same thing for either, only the T changes.
+template <typename T>
+bool compare_numbers(TokenKind op, T a, T b) {
+    switch (op) {
+    case TokenKind::EqualEqual:
+        return a == b;
+    case TokenKind::BangEqual:
+        return a != b;
+    case TokenKind::Less:
+        return a < b;
+    case TokenKind::Greater:
+        return a > b;
+    case TokenKind::LessEqual:
+        return a <= b;
+    case TokenKind::GreaterEqual:
+        return a >= b;
+    default:
+        throw std::runtime_error("operator is not a comparison");
+    }
+}
+
+// figure out a == b for the non-number cases. only two values of the exact same
+// kind can be equal, so a bool is never equal to a string and so on. nil only
+// ever equals nil.
+bool values_equal(const Value& a, const Value& b) {
+    if (is_bool(a) && is_bool(b)) {
+        return std::get<bool>(a) == std::get<bool>(b);
+    }
+    if (is_string(a) && is_string(b)) {
+        return std::get<std::string>(a) == std::get<std::string>(b);
+    }
+    if (is_nil(a) && is_nil(b)) {
+        return true;
+    }
+    return false;
+}
+
+// run a comparison operator and hand back a bool. numbers can use any of the
+// six; everything else only gets == and !=, since ordering strings or bools
+// isn't something the language promises yet.
+bool compare(TokenKind op, const Value& lhs, const Value& rhs) {
+    if (is_int(lhs) && is_int(rhs)) {
+        return compare_numbers(op, std::get<int64_t>(lhs), std::get<int64_t>(rhs));
+    }
+    if (is_float(lhs) && is_float(rhs)) {
+        return compare_numbers(op, std::get<double>(lhs), std::get<double>(rhs));
+    }
+
+    if (op == TokenKind::EqualEqual) {
+        return values_equal(lhs, rhs);
+    }
+    if (op == TokenKind::BangEqual) {
+        return !values_equal(lhs, rhs);
+    }
+
+    throw std::runtime_error("cannot order " + type_name(lhs) + " and " + type_name(rhs));
+}
+
 } // namespace
 
 void Interpreter::interpret(std::vector<std::unique_ptr<Stmt>>& program) {
@@ -114,6 +187,13 @@ void Interpreter::visit_identifier(IdentifierExpr& expr) {
 void Interpreter::visit_binary(BinaryExpr& expr) {
     Value lhs = evaluate(*expr.left);
     Value rhs = evaluate(*expr.right);
+
+    // comparisons split off here before the arithmetic paths, since they always
+    // come back as a bool no matter what the operands were.
+    if (is_comparison(expr.op.kind)) {
+        result_ = compare(expr.op.kind, lhs, rhs);
+        return;
+    }
 
     if (is_int(lhs) && is_int(rhs)) {
         result_ = apply_int(expr.op.kind, std::get<int64_t>(lhs), std::get<int64_t>(rhs));
