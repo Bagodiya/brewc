@@ -132,7 +132,7 @@ std::vector<std::unique_ptr<Stmt>> Parser::parse_program() {
         try {
             statements.push_back(parse_statement());
         } catch (const ParseError& err) {
-            // don't bail on the first mistake — record it and skip ahead so we
+            // don't bail on the first mistake, record it and skip ahead so we
             // can still report whatever else is broken further down the file.
             errors_.push_back(err);
             synchronize();
@@ -237,7 +237,7 @@ std::unique_ptr<Expr> Parser::parse_binary(int min_prec) {
     while (true) {
         int prec = binary_precedence(peek().kind);
         // either we hit something that isn't a binary operator, or it binds
-        // looser than what the caller asked for — either way we're done here.
+        // looser than what the caller asked for. either way we're done here.
         if (prec == 0 || prec < min_prec) {
             break;
         }

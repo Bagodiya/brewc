@@ -3,7 +3,7 @@
 namespace brewc {
 
 // run one node through accept() and pull back whatever it wrote. having this
-// return the string keeps the visit_* bodies readable — they can just splice
+// return the string keeps the visit_* bodies readable, they can just splice
 // child(...) into the parens instead of juggling the shared buffer by hand.
 namespace {
 

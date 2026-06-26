@@ -72,7 +72,7 @@ public:
 
 // something like `a + b` or `x < 10`. holds both sides plus the operator token
 // the lexer gave us so a later pass can look at op.kind to decide what to do.
-// we own the children through unique_ptr — when a BinaryExpr dies the whole
+// we own the children through unique_ptr, so when a BinaryExpr dies the whole
 // subtree under it goes with it.
 class BinaryExpr : public Expr {
 public:

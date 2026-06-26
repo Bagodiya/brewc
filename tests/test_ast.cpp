@@ -218,7 +218,7 @@ TEST_CASE("accept routes control-flow stmts to the right visit", "[ast]") {
 }
 
 TEST_CASE("nested binary expr keeps its subtree alive", "[ast]") {
-    // (1 + 2) * 3 — make sure ownership nests without leaking or dangling.
+    // (1 + 2) * 3, make sure ownership nests without leaking or dangling.
     auto inner = std::make_unique<BinaryExpr>(int_lit("1"),
                                               Token(TokenKind::Plus, "+", 1, 3),
                                               int_lit("2"));
