@@ -254,3 +254,40 @@ TEST_CASE("ordering values that can't be ordered is an error", "[interp]") {
                       literal(TokenKind::String, "b"));
     REQUIRE_THROWS_AS(interp.evaluate(*bad), std::runtime_error);
 }
+
+TEST_CASE("a let binding can be read back by name", "[interp]") {
+    Interpreter interp;
+    auto program = parse_program("let x = 41 + 1;");
+    interp.interpret(program);
+
+    // the name now lives in the interpreter's scope, so evaluating a bare
+    // identifier should hand the bound value straight back.
+    IdentifierExpr x(Token(TokenKind::Identifier, "x", 1, 1));
+    Value v = interp.evaluate(x);
+    REQUIRE(is_int(v));
+    REQUIRE(std::get<int64_t>(v) == 42);
+}
+
+TEST_CASE("one let can refer to an earlier one", "[interp]") {
+    Interpreter interp;
+    auto program = parse_program("let a = 10; let b = a + 5;");
+    interp.interpret(program);
+
+    IdentifierExpr b(Token(TokenKind::Identifier, "b", 1, 1));
+    REQUIRE(std::get<int64_t>(interp.evaluate(b)) == 15);
+}
+
+TEST_CASE("redefining a name replaces the old value", "[interp]") {
+    Interpreter interp;
+    auto program = parse_program("let n = 1; let n = 2;");
+    interp.interpret(program);
+
+    IdentifierExpr n(Token(TokenKind::Identifier, "n", 1, 1));
+    REQUIRE(std::get<int64_t>(interp.evaluate(n)) == 2);
+}
+
+TEST_CASE("reading an unbound name is an error", "[interp]") {
+    Interpreter interp;
+    IdentifierExpr missing(Token(TokenKind::Identifier, "nope", 1, 1));
+    REQUIRE_THROWS_AS(interp.evaluate(missing), std::runtime_error);
+}

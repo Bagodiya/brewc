@@ -176,8 +176,16 @@ void Interpreter::visit_literal(LiteralExpr& expr) {
     }
 }
 
+// read a variable back out. we look it up in the current scope chain and copy
+// the stored value into result_. if the name was never bound the get() call
+// hands back a null slot, which means the program referred to something that
+// doesn't exist, so we stop with an error instead of returning a garbage value.
 void Interpreter::visit_identifier(IdentifierExpr& expr) {
-    (void)expr;
+    Value* slot = globals_.get(expr.name);
+    if (slot == nullptr) {
+        throw std::runtime_error("undefined variable '" + expr.name + "'");
+    }
+    result_ = *slot;
 }
 
 // evaluate both sides first, then run the operator. arithmetic only makes sense
@@ -216,8 +224,16 @@ void Interpreter::visit_call(CallExpr& expr) {
     (void)expr;
 }
 
+// `let x = expr;` runs the initializer first and then binds the result under the
+// name. an empty initializer (just `let x;`) starts the variable off as nil so a
+// later read still finds something. define() puts the name in this scope even if
+// it was already there, so writing `let` twice just replaces the old binding.
 void Interpreter::visit_let(LetStmt& stmt) {
-    (void)stmt;
+    Value value = Nil{};
+    if (stmt.initializer) {
+        value = evaluate(*stmt.initializer);
+    }
+    globals_.define(stmt.name, std::move(value));
 }
 
 void Interpreter::visit_if(IfStmt& stmt) {
