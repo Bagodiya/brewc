@@ -55,6 +55,26 @@ std::unique_ptr<BinaryExpr> binary(std::unique_ptr<Expr> lhs, TokenKind op,
     return std::make_unique<BinaryExpr>(std::move(lhs), Token(op, lexeme, 1, 1), std::move(rhs));
 }
 
+// a let statement we can drop straight into an if branch. it binds `name` to a
+// single int literal so a test can run the interpreter and then check whether
+// that name made it into scope, which tells us which branch actually fired.
+std::unique_ptr<LetStmt> let_int(const std::string& name, const std::string& value) {
+    return std::make_unique<LetStmt>(Token(TokenKind::Identifier, name, 1, 1), int_lit(value));
+}
+
+// did `name` end up bound in the interpreter's scope? reading an unbound name
+// throws, so a clean read means it's there. the if tests use this to tell apart
+// "then ran", "else ran", and "neither ran".
+bool is_bound(Interpreter& interp, const std::string& name) {
+    IdentifierExpr id(Token(TokenKind::Identifier, name, 1, 1));
+    try {
+        interp.evaluate(id);
+        return true;
+    } catch (const std::runtime_error&) {
+        return false;
+    }
+}
+
 } // namespace
 
 TEST_CASE("interpreting an empty program is a no-op", "[interp]") {
@@ -290,4 +310,60 @@ TEST_CASE("reading an unbound name is an error", "[interp]") {
     Interpreter interp;
     IdentifierExpr missing(Token(TokenKind::Identifier, "nope", 1, 1));
     REQUIRE_THROWS_AS(interp.evaluate(missing), std::runtime_error);
+}
+
+// wrap a single statement in a one-element program so we can push it through the
+// public interpret() entry point instead of reaching for execute().
+void run_one(Interpreter& interp, std::unique_ptr<Stmt> stmt) {
+    std::vector<std::unique_ptr<Stmt>> program;
+    program.push_back(std::move(stmt));
+    interp.interpret(program);
+}
+
+TEST_CASE("if with a true condition takes the then branch", "[interp]") {
+    Interpreter interp;
+    auto stmt = std::make_unique<IfStmt>(literal(TokenKind::True, "true"),
+                                         let_int("taken", "1"), let_int("skipped", "2"));
+    run_one(interp, std::move(stmt));
+
+    REQUIRE(is_bound(interp, "taken"));
+    REQUIRE(!is_bound(interp, "skipped"));
+}
+
+TEST_CASE("if with a false condition takes the else branch", "[interp]") {
+    Interpreter interp;
+    auto stmt = std::make_unique<IfStmt>(literal(TokenKind::False, "false"),
+                                         let_int("taken", "1"), let_int("other", "2"));
+    run_one(interp, std::move(stmt));
+
+    REQUIRE(!is_bound(interp, "taken"));
+    REQUIRE(is_bound(interp, "other"));
+}
+
+TEST_CASE("a false condition with no else does nothing", "[interp]") {
+    Interpreter interp;
+    auto stmt = std::make_unique<IfStmt>(literal(TokenKind::False, "false"),
+                                         let_int("body", "1"), nullptr);
+    run_one(interp, std::move(stmt));
+
+    REQUIRE(!is_bound(interp, "body"));
+}
+
+TEST_CASE("a non-bool condition is truthy", "[interp]") {
+    Interpreter interp;
+    // an int that isn't zero still counts as true, so the then branch runs.
+    auto stmt = std::make_unique<IfStmt>(int_lit("7"), let_int("ran", "1"), nullptr);
+    run_one(interp, std::move(stmt));
+
+    REQUIRE(is_bound(interp, "ran"));
+}
+
+TEST_CASE("nil is falsy", "[interp]") {
+    Interpreter interp;
+    auto stmt = std::make_unique<IfStmt>(literal(TokenKind::Nil, "nil"),
+                                         let_int("ran", "1"), let_int("fallback", "2"));
+    run_one(interp, std::move(stmt));
+
+    REQUIRE(!is_bound(interp, "ran"));
+    REQUIRE(is_bound(interp, "fallback"));
 }

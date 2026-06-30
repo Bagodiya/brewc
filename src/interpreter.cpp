@@ -87,6 +87,19 @@ bool compare_numbers(TokenKind op, T a, T b) {
     }
 }
 
+// what counts as "true" when a value lands in an if/while condition. only nil
+// and a false bool are falsy; everything else is true, including zero and the
+// empty string. keeping the rule this small means there's nothing to memorize.
+bool is_truthy(const Value& value) {
+    if (is_nil(value)) {
+        return false;
+    }
+    if (is_bool(value)) {
+        return std::get<bool>(value);
+    }
+    return true;
+}
+
 // figure out a == b for the non-number cases. only two values of the exact same
 // kind can be equal, so a bool is never equal to a string and so on. nil only
 // ever equals nil.
@@ -236,8 +249,15 @@ void Interpreter::visit_let(LetStmt& stmt) {
     globals_.define(stmt.name, std::move(value));
 }
 
+// run the condition, then take exactly one branch. the then side runs when the
+// condition is truthy; otherwise the else side runs if there is one. a missing
+// else just means a false condition does nothing at all.
 void Interpreter::visit_if(IfStmt& stmt) {
-    (void)stmt;
+    if (is_truthy(evaluate(*stmt.condition))) {
+        execute(*stmt.then_branch);
+    } else if (stmt.else_branch) {
+        execute(*stmt.else_branch);
+    }
 }
 
 void Interpreter::visit_while(WhileStmt& stmt) {
