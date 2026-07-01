@@ -260,8 +260,14 @@ void Interpreter::visit_if(IfStmt& stmt) {
     }
 }
 
+// keep running the body as long as the condition stays truthy. the check happens
+// before each pass, so a condition that's already false just runs the body zero
+// times. re-checking every time round is what lets the body change something the
+// condition looks at and eventually fall out of the loop.
 void Interpreter::visit_while(WhileStmt& stmt) {
-    (void)stmt;
+    while (is_truthy(evaluate(*stmt.condition))) {
+        execute(*stmt.body);
+    }
 }
 
 void Interpreter::visit_block(BlockStmt& stmt) {

@@ -62,6 +62,12 @@ std::unique_ptr<LetStmt> let_int(const std::string& name, const std::string& val
     return std::make_unique<LetStmt>(Token(TokenKind::Identifier, name, 1, 1), int_lit(value));
 }
 
+// a bare identifier node, so a test can spell out reads like `i` inside a
+// hand-built condition or expression without routing through the parser.
+std::unique_ptr<IdentifierExpr> ident(const std::string& name) {
+    return std::make_unique<IdentifierExpr>(Token(TokenKind::Identifier, name, 1, 1));
+}
+
 // did `name` end up bound in the interpreter's scope? reading an unbound name
 // throws, so a clean read means it's there. the if tests use this to tell apart
 // "then ran", "else ran", and "neither ran".
@@ -366,4 +372,36 @@ TEST_CASE("nil is falsy", "[interp]") {
 
     REQUIRE(!is_bound(interp, "ran"));
     REQUIRE(is_bound(interp, "fallback"));
+}
+
+TEST_CASE("a while whose condition starts false never runs its body", "[interp]") {
+    Interpreter interp;
+    // condition is a plain false literal, so the loop should skip the body outright
+    // and "body" never makes it into scope.
+    auto stmt = std::make_unique<WhileStmt>(literal(TokenKind::False, "false"),
+                                            let_int("body", "1"));
+    run_one(interp, std::move(stmt));
+
+    REQUIRE(!is_bound(interp, "body"));
+}
+
+TEST_CASE("a while loop iterates until its condition goes false", "[interp]") {
+    Interpreter interp;
+    // start i at zero, then count up while i < 3. the body re-binds i to i + 1 each
+    // pass; since there's no block scope yet the let just overwrites the outer i,
+    // which is what makes the condition eventually fail and the loop stop.
+    auto seed = let_int("i", "0");
+
+    auto cond = binary(ident("i"), TokenKind::Less, "<", int_lit("3"));
+    auto step = std::make_unique<LetStmt>(Token(TokenKind::Identifier, "i", 1, 1),
+                                          binary(ident("i"), TokenKind::Plus, "+", int_lit("1")));
+    auto loop = std::make_unique<WhileStmt>(std::move(cond), std::move(step));
+
+    std::vector<std::unique_ptr<Stmt>> program;
+    program.push_back(std::move(seed));
+    program.push_back(std::move(loop));
+    interp.interpret(program);
+
+    IdentifierExpr i(Token(TokenKind::Identifier, "i", 1, 1));
+    REQUIRE(std::get<int64_t>(interp.evaluate(i)) == 3);
 }
