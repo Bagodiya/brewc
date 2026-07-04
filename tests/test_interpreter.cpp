@@ -318,6 +318,12 @@ TEST_CASE("reading an unbound name is an error", "[interp]") {
     REQUIRE_THROWS_AS(interp.evaluate(missing), std::runtime_error);
 }
 
+// bundle a list of statements into a block node. tests build the vector up first
+// and hand it over, which keeps the block wiring out of each case.
+std::unique_ptr<BlockStmt> block(std::vector<std::unique_ptr<Stmt>> stmts) {
+    return std::make_unique<BlockStmt>(std::move(stmts));
+}
+
 // wrap a single statement in a one-element program so we can push it through the
 // public interpret() entry point instead of reaching for execute().
 void run_one(Interpreter& interp, std::unique_ptr<Stmt> stmt) {
@@ -404,4 +410,49 @@ TEST_CASE("a while loop iterates until its condition goes false", "[interp]") {
 
     IdentifierExpr i(Token(TokenKind::Identifier, "i", 1, 1));
     REQUIRE(std::get<int64_t>(interp.evaluate(i)) == 3);
+}
+
+TEST_CASE("an empty block does nothing", "[interp]") {
+    Interpreter interp;
+    std::vector<std::unique_ptr<Stmt>> body;
+    REQUIRE_NOTHROW(run_one(interp, block(std::move(body))));
+}
+
+TEST_CASE("a let inside a block does not leak to the outer scope", "[interp]") {
+    Interpreter interp;
+    std::vector<std::unique_ptr<Stmt>> body;
+    body.push_back(let_int("inner", "1"));
+    run_one(interp, block(std::move(body)));
+
+    // once the block's scope is gone, its bindings should be gone with it.
+    REQUIRE(!is_bound(interp, "inner"));
+}
+
+TEST_CASE("a block can read a binding from the enclosing scope", "[interp]") {
+    Interpreter interp;
+    // reading the outer x from inside the block has to work; if the block couldn't
+    // see out, the x + 1 read would throw undefined variable and this would fail.
+    std::vector<std::unique_ptr<Stmt>> body;
+    body.push_back(std::make_unique<LetStmt>(Token(TokenKind::Identifier, "y", 1, 1),
+                                             binary(ident("x"), TokenKind::Plus, "+", int_lit("1"))));
+
+    std::vector<std::unique_ptr<Stmt>> program;
+    program.push_back(let_int("x", "7"));
+    program.push_back(block(std::move(body)));
+    REQUIRE_NOTHROW(interp.interpret(program));
+}
+
+TEST_CASE("a let in a block shadows an outer binding without touching it", "[interp]") {
+    Interpreter interp;
+    std::vector<std::unique_ptr<Stmt>> body;
+    body.push_back(let_int("n", "99")); // this n only exists inside the block
+
+    std::vector<std::unique_ptr<Stmt>> program;
+    program.push_back(let_int("n", "1"));
+    program.push_back(block(std::move(body)));
+    interp.interpret(program);
+
+    // the block bound its own n, so the outer one should still read back as 1.
+    IdentifierExpr n(Token(TokenKind::Identifier, "n", 1, 1));
+    REQUIRE(std::get<int64_t>(interp.evaluate(n)) == 1);
 }

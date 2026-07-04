@@ -53,6 +53,10 @@ private:
     void execute(Stmt& stmt);
 
     Environment globals_;
+    // the scope we're binding and looking names up in right now. it starts at the
+    // globals and a block temporarily points it at a nested scope while it runs,
+    // then puts it back. declared after globals_ so &globals_ is valid here.
+    Environment* current_ = &globals_;
     Value result_ = Nil{}; // the most recent expression result, ferried out of visit_*
 };
 

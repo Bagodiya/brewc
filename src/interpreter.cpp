@@ -194,7 +194,7 @@ void Interpreter::visit_literal(LiteralExpr& expr) {
 // hands back a null slot, which means the program referred to something that
 // doesn't exist, so we stop with an error instead of returning a garbage value.
 void Interpreter::visit_identifier(IdentifierExpr& expr) {
-    Value* slot = globals_.get(expr.name);
+    Value* slot = current_->get(expr.name);
     if (slot == nullptr) {
         throw std::runtime_error("undefined variable '" + expr.name + "'");
     }
@@ -246,7 +246,7 @@ void Interpreter::visit_let(LetStmt& stmt) {
     if (stmt.initializer) {
         value = evaluate(*stmt.initializer);
     }
-    globals_.define(stmt.name, std::move(value));
+    current_->define(stmt.name, std::move(value));
 }
 
 // run the condition, then take exactly one branch. the then side runs when the
@@ -270,8 +270,27 @@ void Interpreter::visit_while(WhileStmt& stmt) {
     }
 }
 
+// a block runs its statements in a fresh scope hung off the current one, so any
+// name a `let` binds inside the braces is gone again once we leave. we point
+// current_ at the new scope while the block runs and set it back after. the
+// try/catch is only there so that if a statement throws partway through we still
+// restore the outer scope instead of leaving current_ aimed at a scope that's
+// already been destroyed.
 void Interpreter::visit_block(BlockStmt& stmt) {
-    (void)stmt;
+    Environment inner(current_);
+    Environment* outer = current_;
+    current_ = &inner;
+    try {
+        for (auto& s : stmt.statements) {
+            if (s) {
+                execute(*s);
+            }
+        }
+    } catch (...) {
+        current_ = outer;
+        throw;
+    }
+    current_ = outer;
 }
 
 void Interpreter::visit_fn(FnDecl& stmt) {
