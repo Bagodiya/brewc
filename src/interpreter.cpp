@@ -293,8 +293,14 @@ void Interpreter::visit_block(BlockStmt& stmt) {
     current_ = outer;
 }
 
+// `fn name(...) { ... }` just binds a value like a let does — the value happens
+// to be callable. we hand the binding a Function pointing back at this decl and
+// drop it into the current scope under the function's name. no call happens here;
+// this only makes the name resolve to something. actually running the body is the
+// next step's job. binding it as a plain value is what makes functions first
+// class: you can look one up, pass it around, and later call it.
 void Interpreter::visit_fn(FnDecl& stmt) {
-    (void)stmt;
+    current_->define(stmt.name, Function{&stmt});
 }
 
 } // namespace brewc

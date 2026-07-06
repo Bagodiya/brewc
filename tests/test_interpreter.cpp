@@ -456,3 +456,43 @@ TEST_CASE("a let in a block shadows an outer binding without touching it", "[int
     IdentifierExpr n(Token(TokenKind::Identifier, "n", 1, 1));
     REQUIRE(std::get<int64_t>(interp.evaluate(n)) == 1);
 }
+
+TEST_CASE("a function declaration binds a callable value", "[interp]") {
+    Interpreter interp;
+    auto program = parse_program("fn add(a, b) { }");
+    interp.interpret(program);
+
+    // running the decl should leave `add` bound to a function value, the same way
+    // a let would leave a name bound to a number.
+    IdentifierExpr add(Token(TokenKind::Identifier, "add", 1, 1));
+    Value v = interp.evaluate(add);
+    REQUIRE(is_function(v));
+}
+
+TEST_CASE("a function value points back at its declaration", "[interp]") {
+    Interpreter interp;
+    auto program = parse_program("fn greet() { }");
+    interp.interpret(program);
+
+    IdentifierExpr greet(Token(TokenKind::Identifier, "greet", 1, 1));
+    Value v = interp.evaluate(greet);
+    REQUIRE(is_function(v));
+
+    // the value carries the decl so a later call step can find the body and params.
+    Function fn = std::get<Function>(v);
+    REQUIRE(fn.decl != nullptr);
+    REQUIRE(fn.decl->name == "greet");
+}
+
+TEST_CASE("a function bound at top level does not leak out of a block", "[interp]") {
+    Interpreter interp;
+    // a fn declared inside braces should behave like any other block binding: gone
+    // once the block finishes, since visit_fn just defines into the current scope.
+    std::vector<std::unique_ptr<Stmt>> body;
+    body.push_back(std::make_unique<FnDecl>(Token(TokenKind::Identifier, "hidden", 1, 1),
+                                            std::vector<Token>{},
+                                            block({})));
+    run_one(interp, block(std::move(body)));
+
+    REQUIRE(!is_bound(interp, "hidden"));
+}
