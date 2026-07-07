@@ -1,5 +1,6 @@
 #include "brewc/interpreter.h"
 
+#include <cstddef>
 #include <stdexcept>
 #include <string>
 
@@ -233,8 +234,51 @@ void Interpreter::visit_unary(UnaryExpr& expr) {
     (void)expr;
 }
 
+// `foo(1, 2)`. work out what we're calling, make sure it really is a function,
+// then line the argument values up against the parameter names. the params go
+// into a brand new scope that hangs off the globals rather than off whoever made
+// the call, so a function always sees the same outer names no matter where it
+// gets called from. there's no return statement in the language yet, so the call
+// just runs the body for its effects and comes back as nil.
 void Interpreter::visit_call(CallExpr& expr) {
-    (void)expr;
+    Value callee = evaluate(*expr.callee);
+    if (!is_function(callee)) {
+        throw std::runtime_error("can only call functions, not " + type_name(callee));
+    }
+    FnDecl* decl = std::get<Function>(callee).decl;
+
+    // evaluate every argument up front, left to right, before any of them get
+    // bound. that way a later argument can't see a half-built call scope.
+    std::vector<Value> arguments;
+    arguments.reserve(expr.args.size());
+    for (auto& arg : expr.args) {
+        arguments.push_back(evaluate(*arg));
+    }
+
+    if (arguments.size() != decl->params.size()) {
+        throw std::runtime_error("function '" + decl->name + "' takes " +
+                                 std::to_string(decl->params.size()) + " arguments but got " +
+                                 std::to_string(arguments.size()));
+    }
+
+    Environment call_scope(&globals_);
+    for (std::size_t i = 0; i < decl->params.size(); ++i) {
+        call_scope.define(decl->params[i].lexeme, arguments[i]);
+    }
+
+    // same save/restore dance the block does, so a throw partway through the body
+    // still leaves current_ pointing back at the caller's scope.
+    Environment* outer = current_;
+    current_ = &call_scope;
+    try {
+        execute(*decl->body);
+    } catch (...) {
+        current_ = outer;
+        throw;
+    }
+    current_ = outer;
+
+    result_ = Nil{};
 }
 
 // `let x = expr;` runs the initializer first and then binds the result under the

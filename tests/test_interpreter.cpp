@@ -496,3 +496,142 @@ TEST_CASE("a function bound at top level does not leak out of a block", "[interp
 
     REQUIRE(!is_bound(interp, "hidden"));
 }
+
+// build a call node by hand so a test can invoke a function that's already been
+// defined without needing an expression-statement rule in the parser yet.
+std::unique_ptr<CallExpr> call(std::unique_ptr<Expr> callee,
+                               std::vector<std::unique_ptr<Expr>> args) {
+    return std::make_unique<CallExpr>(std::move(callee), Token(TokenKind::LParen, "(", 1, 1),
+                                      std::move(args));
+}
+
+// shorthand for the common "call by name" case: look up a function under `name`
+// and pass it the given arguments.
+std::unique_ptr<CallExpr> call_named(const std::string& name,
+                                     std::vector<std::unique_ptr<Expr>> args) {
+    return call(ident(name), std::move(args));
+}
+
+// hand-build `fn name(params) { body }`. the call tests reach for this instead of
+// the parser so they only exercise the interpreter and don't ride on however the
+// parser happens to handle a body full of statements.
+std::unique_ptr<FnDecl> fn_decl(const std::string& name, std::vector<std::string> params,
+                                std::vector<std::unique_ptr<Stmt>> body_stmts) {
+    std::vector<Token> param_tokens;
+    for (const auto& p : params) {
+        param_tokens.push_back(Token(TokenKind::Identifier, p, 1, 1));
+    }
+    return std::make_unique<FnDecl>(Token(TokenKind::Identifier, name, 1, 1),
+                                    std::move(param_tokens), block(std::move(body_stmts)));
+}
+
+TEST_CASE("calling a no-arg function runs its body", "[interp]") {
+    Interpreter interp;
+    auto program = parse_program("fn nothing() { }");
+    interp.interpret(program);
+
+    auto c = call_named("nothing", {});
+    REQUIRE_NOTHROW(interp.evaluate(*c));
+}
+
+TEST_CASE("a call has no return value yet so it comes back as nil", "[interp]") {
+    Interpreter interp;
+    auto program = parse_program("fn nothing() { }");
+    interp.interpret(program);
+
+    auto c = call_named("nothing", {});
+    Value v = interp.evaluate(*c);
+    REQUIRE(is_nil(v));
+}
+
+TEST_CASE("an argument value is bound to the matching parameter", "[interp]") {
+    Interpreter interp;
+    // fn f(x) { let y = 10 / x; } — dividing ten by the parameter, so passing zero
+    // surfaces as a division-by-zero error. that only fires if x really got bound to
+    // 0, which is what proves the argument reached the parameter. the program vector
+    // is kept alive for the whole test so the function value's decl stays valid.
+    std::vector<std::unique_ptr<Stmt>> body;
+    body.push_back(std::make_unique<LetStmt>(
+        Token(TokenKind::Identifier, "y", 1, 1),
+        binary(int_lit("10"), TokenKind::Slash, "/", ident("x"))));
+
+    std::vector<std::unique_ptr<Stmt>> program;
+    program.push_back(fn_decl("f", {"x"}, std::move(body)));
+    interp.interpret(program);
+
+    std::vector<std::unique_ptr<Expr>> zero_arg;
+    zero_arg.push_back(int_lit("0"));
+    auto boom = call_named("f", std::move(zero_arg));
+    REQUIRE_THROWS_AS(interp.evaluate(*boom), std::runtime_error);
+
+    std::vector<std::unique_ptr<Expr>> good_arg;
+    good_arg.push_back(int_lit("2"));
+    auto ok = call_named("f", std::move(good_arg));
+    REQUIRE_NOTHROW(interp.evaluate(*ok));
+}
+
+TEST_CASE("each parameter lines up with its own argument", "[interp]") {
+    Interpreter interp;
+    // fn g(a, b) { let z = 1 / (a - b); } — a minus b as a divisor. equal arguments
+    // make it zero and blow up; a mismatched pair is fine. if the two arguments bound
+    // in the wrong order this wouldn't tell us anything, but since a - b isn't
+    // symmetric the ordering is exactly what's under test.
+    std::vector<std::unique_ptr<Stmt>> body;
+    body.push_back(std::make_unique<LetStmt>(
+        Token(TokenKind::Identifier, "z", 1, 1),
+        binary(int_lit("1"), TokenKind::Slash, "/",
+               binary(ident("a"), TokenKind::Minus, "-", ident("b")))));
+
+    std::vector<std::unique_ptr<Stmt>> program;
+    program.push_back(fn_decl("g", {"a", "b"}, std::move(body)));
+    interp.interpret(program);
+
+    std::vector<std::unique_ptr<Expr>> equal;
+    equal.push_back(int_lit("5"));
+    equal.push_back(int_lit("5"));
+    auto same = call_named("g", std::move(equal));
+    REQUIRE_THROWS_AS(interp.evaluate(*same), std::runtime_error);
+
+    std::vector<std::unique_ptr<Expr>> different;
+    different.push_back(int_lit("5"));
+    different.push_back(int_lit("3"));
+    auto diff = call_named("g", std::move(different));
+    REQUIRE_NOTHROW(interp.evaluate(*diff));
+}
+
+TEST_CASE("a parameter does not leak into the outer scope after the call", "[interp]") {
+    Interpreter interp;
+    auto program = parse_program("fn f(secret) { }");
+    interp.interpret(program);
+
+    std::vector<std::unique_ptr<Expr>> arg;
+    arg.push_back(int_lit("1"));
+    auto c = call_named("f", std::move(arg));
+    interp.evaluate(*c);
+
+    // `secret` only exists for the length of the call, so it must be gone now.
+    REQUIRE(!is_bound(interp, "secret"));
+}
+
+TEST_CASE("calling with the wrong number of arguments is an error", "[interp]") {
+    Interpreter interp;
+    auto program = parse_program("fn takes_one(a) { }");
+    interp.interpret(program);
+
+    auto too_few = call_named("takes_one", {});
+    REQUIRE_THROWS_AS(interp.evaluate(*too_few), std::runtime_error);
+
+    std::vector<std::unique_ptr<Expr>> two;
+    two.push_back(int_lit("1"));
+    two.push_back(int_lit("2"));
+    auto too_many = call_named("takes_one", std::move(two));
+    REQUIRE_THROWS_AS(interp.evaluate(*too_many), std::runtime_error);
+}
+
+TEST_CASE("calling something that isn't a function is an error", "[interp]") {
+    Interpreter interp;
+    // the callee is a plain integer literal, which has no body to run.
+    std::vector<std::unique_ptr<Expr>> args;
+    auto c = call(int_lit("42"), std::move(args));
+    REQUIRE_THROWS_AS(interp.evaluate(*c), std::runtime_error);
+}
