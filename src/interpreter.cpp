@@ -236,16 +236,18 @@ void Interpreter::visit_unary(UnaryExpr& expr) {
 
 // `foo(1, 2)`. work out what we're calling, make sure it really is a function,
 // then line the argument values up against the parameter names. the params go
-// into a brand new scope that hangs off the globals rather than off whoever made
-// the call, so a function always sees the same outer names no matter where it
-// gets called from. there's no return statement in the language yet, so the call
-// just runs the body for its effects and comes back as nil.
+// into a brand new scope that hangs off the scope the function was declared in,
+// not off whoever happened to make the call. that captured scope is what lets the
+// body find the function's own name, so a function can call itself and recurse.
+// there's no return statement in the language yet, so the call just runs the body
+// for its effects and comes back as nil.
 void Interpreter::visit_call(CallExpr& expr) {
     Value callee = evaluate(*expr.callee);
     if (!is_function(callee)) {
         throw std::runtime_error("can only call functions, not " + type_name(callee));
     }
-    FnDecl* decl = std::get<Function>(callee).decl;
+    Function fn = std::get<Function>(callee);
+    FnDecl* decl = fn.decl;
 
     // evaluate every argument up front, left to right, before any of them get
     // bound. that way a later argument can't see a half-built call scope.
@@ -261,7 +263,11 @@ void Interpreter::visit_call(CallExpr& expr) {
                                  std::to_string(arguments.size()));
     }
 
-    Environment call_scope(&globals_);
+    // hang the call scope off the scope the function was declared in. older
+    // function values built before we tracked that don't carry one, so fall back
+    // to the globals in that case.
+    Environment* enclosing = fn.closure ? fn.closure : &globals_;
+    Environment call_scope(enclosing);
     for (std::size_t i = 0; i < decl->params.size(); ++i) {
         call_scope.define(decl->params[i].lexeme, arguments[i]);
     }
@@ -344,7 +350,10 @@ void Interpreter::visit_block(BlockStmt& stmt) {
 // next step's job. binding it as a plain value is what makes functions first
 // class: you can look one up, pass it around, and later call it.
 void Interpreter::visit_fn(FnDecl& stmt) {
-    current_->define(stmt.name, Function{&stmt});
+    // remember the scope we're declaring into so a later call can hang its own
+    // scope off it. for a top-level fn that's just the globals, but capturing it
+    // here is what makes the name resolve to itself once the body runs.
+    current_->define(stmt.name, Function{&stmt, current_});
 }
 
 } // namespace brewc

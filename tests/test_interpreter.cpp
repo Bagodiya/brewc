@@ -635,3 +635,84 @@ TEST_CASE("calling something that isn't a function is an error", "[interp]") {
     auto c = call(int_lit("42"), std::move(args));
     REQUIRE_THROWS_AS(interp.evaluate(*c), std::runtime_error);
 }
+
+// run a program and hand back whatever error message it threw, or the empty
+// string if it finished cleanly. the recursion tests use this to tell apart a
+// base case that was actually reached from a name that never resolved.
+std::string run_error(Interpreter& interp, std::vector<std::unique_ptr<Stmt>>& program) {
+    try {
+        interp.interpret(program);
+        return "";
+    } catch (const std::runtime_error& e) {
+        return e.what();
+    }
+}
+
+TEST_CASE("a top-level function can call itself", "[interp]") {
+    Interpreter interp;
+    // down just counts to zero. it never errors, so the only way this throws is if
+    // the recursive call couldn't find `down` from inside the body.
+    auto program = parse_program("fn down(n) {"
+                                 "  if n > 0 {"
+                                 "    let step = down(n - 1)"
+                                 "  }"
+                                 "}"
+                                 "let go = down(5)");
+    REQUIRE_NOTHROW(interp.interpret(program));
+}
+
+TEST_CASE("recursion runs all the way down to the base case", "[interp]") {
+    Interpreter interp;
+    // count down from 3 and divide by zero once we hit the bottom. getting the
+    // division error means every level fired and the base case was reached; if the
+    // body couldn't see its own name we'd get an 'undefined variable' error long
+    // before that, so the message is what proves the recursion really happened.
+    auto program = parse_program("fn count(n) {"
+                                 "  if n == 0 {"
+                                 "    let boom = 1 / 0"
+                                 "  } else {"
+                                 "    let step = count(n - 1)"
+                                 "  }"
+                                 "}"
+                                 "let go = count(3)");
+    std::string err = run_error(interp, program);
+    REQUIRE(err.find("division by zero") != std::string::npos);
+}
+
+TEST_CASE("a function declared inside a block can still recurse", "[interp]") {
+    Interpreter interp;
+    // count lives only inside a block, so it never reaches the globals. the call
+    // scope has to hang off the block scope where count was declared, otherwise the
+    // recursive call goes looking in the globals and comes up empty. build it by
+    // hand since a bare block isn't a top-level statement the parser accepts.
+
+    // inner recursive call: count(n - 1)
+    std::vector<std::unique_ptr<Expr>> rec_args;
+    rec_args.push_back(binary(ident("n"), TokenKind::Minus, "-", int_lit("1")));
+    auto rec_let = std::make_unique<LetStmt>(Token(TokenKind::Identifier, "step", 1, 1),
+                                             call_named("count", std::move(rec_args)));
+
+    // then-branch: { let step = count(n - 1); }
+    std::vector<std::unique_ptr<Stmt>> then_stmts;
+    then_stmts.push_back(std::move(rec_let));
+
+    // if n > 0 { ... }
+    auto cond = binary(ident("n"), TokenKind::Greater, ">", int_lit("0"));
+    auto guard = std::make_unique<IfStmt>(std::move(cond), block(std::move(then_stmts)), nullptr);
+
+    std::vector<std::unique_ptr<Stmt>> fn_body;
+    fn_body.push_back(std::move(guard));
+
+    // let go = count(3);
+    std::vector<std::unique_ptr<Expr>> start_args;
+    start_args.push_back(int_lit("3"));
+    auto start = std::make_unique<LetStmt>(Token(TokenKind::Identifier, "go", 1, 1),
+                                           call_named("count", std::move(start_args)));
+
+    // { fn count(n) { ... } let go = count(3); }
+    std::vector<std::unique_ptr<Stmt>> outer;
+    outer.push_back(fn_decl("count", {"n"}, std::move(fn_body)));
+    outer.push_back(std::move(start));
+
+    REQUIRE_NOTHROW(run_one(interp, block(std::move(outer))));
+}

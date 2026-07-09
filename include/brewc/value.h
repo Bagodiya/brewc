@@ -13,16 +13,22 @@ namespace brewc {
 struct Nil {};
 
 // a `fn` declaration node. only forward declared here so Value can point at one
-// without value.h having to drag in the whole ast header.
+// without value.h having to drag in the whole ast header. Environment is forward
+// declared for the same reason — the function only holds a pointer to one.
 class FnDecl;
+class Environment;
 
 // a function is just another kind of value: `fn add(...) {...}` binds a callable
-// under `add` the same way `let` binds a number. all we keep is a pointer back to
-// the declaration the function came from — the AST outlives the run, so the body,
+// under `add` the same way `let` binds a number. decl points back at the
+// declaration the function came from — the AST outlives the run, so the body,
 // params and name are still reachable through it when the call finally happens.
-// nothing owns the FnDecl here; the parsed program does.
+// closure is the scope the fn was declared in; a call hangs its own scope off it
+// so the body can find the function's own name (recursion) and whatever else was
+// in scope when it was written. nothing owns either pointer here — the parsed
+// program owns the decl and the interpreter keeps the scopes alive.
 struct Function {
     FnDecl* decl = nullptr;
+    Environment* closure = nullptr;
 };
 
 // the runtime representation of a value while a program is actually running.
