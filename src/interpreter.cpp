@@ -140,6 +140,12 @@ bool compare(TokenKind op, const Value& lhs, const Value& rhs) {
 
 } // namespace
 
+// spin up the global scope on the heap and point current_ at it to start. both
+// are shared_ptrs so any function declared later can grab a handle and keep the
+// scope it was born in alive for as long as the function value sticks around.
+Interpreter::Interpreter()
+    : globals_(std::make_shared<Environment>()), current_(globals_) {}
+
 void Interpreter::interpret(std::vector<std::unique_ptr<Stmt>>& program) {
     for (auto& stmt : program) {
         if (stmt) {
@@ -263,19 +269,19 @@ void Interpreter::visit_call(CallExpr& expr) {
                                  std::to_string(arguments.size()));
     }
 
-    // hang the call scope off the scope the function was declared in. older
-    // function values built before we tracked that don't carry one, so fall back
-    // to the globals in that case.
-    Environment* enclosing = fn.closure ? fn.closure : &globals_;
-    Environment call_scope(enclosing);
+    // hang the call scope off the scope the function was declared in — its
+    // closure. older function values built before we tracked that don't carry one,
+    // so fall back to the globals in that case.
+    std::shared_ptr<Environment> enclosing = fn.closure ? fn.closure : globals_;
+    auto call_scope = std::make_shared<Environment>(enclosing);
     for (std::size_t i = 0; i < decl->params.size(); ++i) {
-        call_scope.define(decl->params[i].lexeme, arguments[i]);
+        call_scope->define(decl->params[i].lexeme, arguments[i]);
     }
 
     // same save/restore dance the block does, so a throw partway through the body
     // still leaves current_ pointing back at the caller's scope.
-    Environment* outer = current_;
-    current_ = &call_scope;
+    std::shared_ptr<Environment> outer = current_;
+    current_ = call_scope;
     try {
         execute(*decl->body);
     } catch (...) {
@@ -327,9 +333,9 @@ void Interpreter::visit_while(WhileStmt& stmt) {
 // restore the outer scope instead of leaving current_ aimed at a scope that's
 // already been destroyed.
 void Interpreter::visit_block(BlockStmt& stmt) {
-    Environment inner(current_);
-    Environment* outer = current_;
-    current_ = &inner;
+    auto inner = std::make_shared<Environment>(current_);
+    std::shared_ptr<Environment> outer = current_;
+    current_ = inner;
     try {
         for (auto& s : stmt.statements) {
             if (s) {

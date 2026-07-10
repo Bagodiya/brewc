@@ -24,7 +24,7 @@ namespace brewc {
 // them in one node type at a time.
 class Interpreter : public Visitor, public StmtVisitor {
 public:
-    Interpreter() = default;
+    Interpreter();
 
     // run a whole program, one top-level statement after another.
     void interpret(std::vector<std::unique_ptr<Stmt>>& program);
@@ -52,11 +52,15 @@ private:
     // statement side reads the same way the expression side does.
     void execute(Stmt& stmt);
 
-    Environment globals_;
+    // the outermost scope, alive for the whole run. it's a shared_ptr now so a
+    // function declared up here can close over it the same way one declared inside
+    // a block closes over its block — every scope is heap-owned, no special case
+    // for the globals.
+    std::shared_ptr<Environment> globals_;
     // the scope we're binding and looking names up in right now. it starts at the
     // globals and a block temporarily points it at a nested scope while it runs,
-    // then puts it back. declared after globals_ so &globals_ is valid here.
-    Environment* current_ = &globals_;
+    // then puts it back.
+    std::shared_ptr<Environment> current_;
     Value result_ = Nil{}; // the most recent expression result, ferried out of visit_*
 };
 

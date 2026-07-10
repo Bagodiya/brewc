@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include "brewc/environment.h"
@@ -32,24 +33,24 @@ TEST_CASE("defining a name twice overwrites it", "[env]") {
 }
 
 TEST_CASE("a child scope sees names from its parent", "[env]") {
-    Environment outer;
-    outer.define("g", std::string("hi"));
+    auto outer = std::make_shared<Environment>();
+    outer->define("g", std::string("hi"));
 
-    Environment inner(&outer);
+    Environment inner(outer);
     Value* found = inner.get("g");
     REQUIRE(found != nullptr);
     REQUIRE(std::get<std::string>(*found) == "hi");
 }
 
 TEST_CASE("a child binding shadows the parent without changing it", "[env]") {
-    Environment outer;
-    outer.define("x", int64_t{1});
+    auto outer = std::make_shared<Environment>();
+    outer->define("x", int64_t{1});
 
-    Environment inner(&outer);
+    Environment inner(outer);
     inner.define("x", int64_t{99});
 
     REQUIRE(std::get<int64_t>(*inner.get("x")) == 99);
-    REQUIRE(std::get<int64_t>(*outer.get("x")) == 1);
+    REQUIRE(std::get<int64_t>(*outer->get("x")) == 1);
 }
 
 TEST_CASE("assign updates an existing binding in place", "[env]") {
@@ -61,13 +62,13 @@ TEST_CASE("assign updates an existing binding in place", "[env]") {
 }
 
 TEST_CASE("assign walks outward to find the binding", "[env]") {
-    Environment outer;
-    outer.define("x", int64_t{1});
+    auto outer = std::make_shared<Environment>();
+    outer->define("x", int64_t{1});
 
-    Environment inner(&outer);
+    Environment inner(outer);
     REQUIRE(inner.assign("x", int64_t{7}));
     // it changed the outer slot, not a fresh one in the inner scope.
-    REQUIRE(std::get<int64_t>(*outer.get("x")) == 7);
+    REQUIRE(std::get<int64_t>(*outer->get("x")) == 7);
 }
 
 TEST_CASE("assign to an undefined name fails", "[env]") {

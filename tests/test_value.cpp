@@ -49,7 +49,9 @@ TEST_CASE("a default value is nil", "[value]") {
 TEST_CASE("a function value knows it is a function", "[value]") {
     // an empty-body, no-param decl is enough to hang a Function value off of.
     FnDecl decl(Token(TokenKind::Identifier, "add", 1, 1), {}, nullptr);
-    Value v = Function{&decl};
+    // no closure scope here — these value-level tests only care about the decl
+    // half, so the captured scope stays null.
+    Value v = Function{&decl, nullptr};
     REQUIRE(is_function(v));
     REQUIRE_FALSE(is_int(v));
     REQUIRE_FALSE(is_string(v));
@@ -63,7 +65,7 @@ TEST_CASE("type_name reports each variant", "[value]") {
     REQUIRE(type_name(Value{2.5}) == "float");
     REQUIRE(type_name(Value{false}) == "bool");
     REQUIRE(type_name(Value{std::string("x")}) == "string");
-    REQUIRE(type_name(Value{Function{&decl}}) == "function");
+    REQUIRE(type_name(Value{Function{&decl, nullptr}}) == "function");
 }
 
 TEST_CASE("to_string renders ints plainly", "[value]") {
@@ -98,5 +100,5 @@ TEST_CASE("to_string keeps the fractional part of a float", "[value]") {
 
 TEST_CASE("to_string prints a function with its name", "[value]") {
     FnDecl decl(Token(TokenKind::Identifier, "greet", 1, 1), {}, nullptr);
-    REQUIRE(to_string(Value{Function{&decl}}) == "<fn greet>");
+    REQUIRE(to_string(Value{Function{&decl, nullptr}}) == "<fn greet>");
 }

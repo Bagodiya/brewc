@@ -9,7 +9,9 @@ void Environment::define(const std::string& name, Value value) {
 }
 
 Value* Environment::get(const std::string& name) {
-    for (Environment* scope = this; scope != nullptr; scope = scope->parent_) {
+    // walk outward with a plain pointer — following the chain doesn't own
+    // anything, the shared_ptrs already keep every scope alive for us.
+    for (Environment* scope = this; scope != nullptr; scope = scope->parent_.get()) {
         auto it = scope->values_.find(name);
         if (it != scope->values_.end()) {
             return &it->second;
@@ -19,7 +21,7 @@ Value* Environment::get(const std::string& name) {
 }
 
 bool Environment::assign(const std::string& name, Value value) {
-    for (Environment* scope = this; scope != nullptr; scope = scope->parent_) {
+    for (Environment* scope = this; scope != nullptr; scope = scope->parent_.get()) {
         auto it = scope->values_.find(name);
         if (it != scope->values_.end()) {
             it->second = std::move(value);

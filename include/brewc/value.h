@@ -2,6 +2,7 @@
 #define BREWC_VALUE_H
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <variant>
 
@@ -24,11 +25,16 @@ class Environment;
 // params and name are still reachable through it when the call finally happens.
 // closure is the scope the fn was declared in; a call hangs its own scope off it
 // so the body can find the function's own name (recursion) and whatever else was
-// in scope when it was written. nothing owns either pointer here — the parsed
-// program owns the decl and the interpreter keeps the scopes alive.
+// in scope when it was written.
+//
+// closure is a shared_ptr, so the function keeps its birth scope alive as long as
+// the function value is around. that's the whole point of a closure — the fn can
+// still reach the variables it grew up with even after that block has run to the
+// end. decl stays a plain pointer since the parsed program owns every node and
+// hangs around for the whole run.
 struct Function {
     FnDecl* decl = nullptr;
-    Environment* closure = nullptr;
+    std::shared_ptr<Environment> closure;
 };
 
 // the runtime representation of a value while a program is actually running.

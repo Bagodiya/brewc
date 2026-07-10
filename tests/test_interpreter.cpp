@@ -716,3 +716,57 @@ TEST_CASE("a function declared inside a block can still recurse", "[interp]") {
 
     REQUIRE_NOTHROW(run_one(interp, block(std::move(outer))));
 }
+
+TEST_CASE("a function closes over a variable from the scope it was declared in", "[interp]") {
+    Interpreter interp;
+    // reader captures `base` from the enclosing block, not from its own params and
+    // not from the globals. calling it divides 1 / base, and since base is 0 the
+    // only way this reaches a division-by-zero is if the closure actually saw the
+    // captured binding. if closures didn't reach the enclosing scope we'd trip over
+    // 'undefined variable base' first, so the error message is what proves capture.
+    std::vector<std::unique_ptr<Stmt>> reader_body;
+    reader_body.push_back(std::make_unique<LetStmt>(
+        Token(TokenKind::Identifier, "boom", 1, 1),
+        binary(int_lit("1"), TokenKind::Slash, "/", ident("base"))));
+
+    std::vector<std::unique_ptr<Expr>> no_args;
+    auto invoke = std::make_unique<LetStmt>(Token(TokenKind::Identifier, "go", 1, 1),
+                                            call_named("reader", std::move(no_args)));
+
+    std::vector<std::unique_ptr<Stmt>> outer;
+    outer.push_back(let_int("base", "0"));
+    outer.push_back(fn_decl("reader", {}, std::move(reader_body)));
+    outer.push_back(std::move(invoke));
+
+    std::vector<std::unique_ptr<Stmt>> program;
+    program.push_back(block(std::move(outer)));
+    std::string err = run_error(interp, program);
+    REQUIRE(err.find("division by zero") != std::string::npos);
+}
+
+TEST_CASE("a closure sees the enclosing value at the moment it is called", "[interp]") {
+    Interpreter interp;
+    // watcher reads `n` from the enclosing scope. we bump n from 1 to 0 before the
+    // call, then invoke watcher — dividing 1 / n blows up only because the closure
+    // reads the live enclosing binding rather than a stale copy taken at declare
+    // time. a snapshot-at-declaration would still see n == 1 and finish cleanly.
+    std::vector<std::unique_ptr<Stmt>> watcher_body;
+    watcher_body.push_back(std::make_unique<LetStmt>(
+        Token(TokenKind::Identifier, "hit", 1, 1),
+        binary(int_lit("1"), TokenKind::Slash, "/", ident("n"))));
+
+    std::vector<std::unique_ptr<Expr>> no_args;
+    auto invoke = std::make_unique<LetStmt>(Token(TokenKind::Identifier, "go", 1, 1),
+                                            call_named("watcher", std::move(no_args)));
+
+    std::vector<std::unique_ptr<Stmt>> outer;
+    outer.push_back(let_int("n", "1"));
+    outer.push_back(fn_decl("watcher", {}, std::move(watcher_body)));
+    outer.push_back(let_int("n", "0")); // redefine n in the same scope before the call
+    outer.push_back(std::move(invoke));
+
+    std::vector<std::unique_ptr<Stmt>> program;
+    program.push_back(block(std::move(outer)));
+    std::string err = run_error(interp, program);
+    REQUIRE(err.find("division by zero") != std::string::npos);
+}
