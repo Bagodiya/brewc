@@ -12,13 +12,18 @@ bool is_float(const Value& value) { return std::holds_alternative<double>(value)
 bool is_bool(const Value& value) { return std::holds_alternative<bool>(value); }
 bool is_string(const Value& value) { return std::holds_alternative<std::string>(value); }
 bool is_function(const Value& value) { return std::holds_alternative<Function>(value); }
+bool is_native(const Value& value) {
+    return std::holds_alternative<std::shared_ptr<NativeFn>>(value);
+}
 
 std::string type_name(const Value& value) {
     if (is_nil(value)) return "nil";
     if (is_int(value)) return "int";
     if (is_float(value)) return "float";
     if (is_bool(value)) return "bool";
-    if (is_function(value)) return "function";
+    // a builtin is a callable just like a user fn, so from a brew program's point
+    // of view it's the same "function" type.
+    if (is_function(value) || is_native(value)) return "function";
     return "string";
 }
 
@@ -33,6 +38,13 @@ std::string to_string(const Value& value) {
     if (is_function(value)) {
         const FnDecl* decl = std::get<Function>(value).decl;
         return "<fn " + (decl ? decl->name : "?") + ">";
+    }
+
+    // builtins print much the same way, tagged so they're easy to tell apart from
+    // a function written in brew itself.
+    if (is_native(value)) {
+        const auto& native = std::get<std::shared_ptr<NativeFn>>(value);
+        return "<builtin " + (native ? native->name : "?") + ">";
     }
 
     // float left. std::to_string would pad it out to six decimals which looks

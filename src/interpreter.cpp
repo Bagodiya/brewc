@@ -1,12 +1,32 @@
 #include "brewc/interpreter.h"
 
 #include <cstddef>
+#include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace brewc {
 
 namespace {
+
+// the print builtin. walk the arguments left to right and write each one out with
+// to_string, which already knows how to render every Value variant, so this works
+// on ints, floats, bools, strings, nil and even functions without any extra work
+// here. multiple arguments are separated by a single space and the whole line ends
+// with a newline. there's nothing useful to return, so a call to print comes back
+// as nil like any other side-effecting statement.
+Value builtin_print(const std::vector<Value>& args) {
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (i != 0) {
+            std::cout << ' ';
+        }
+        std::cout << to_string(args[i]);
+    }
+    std::cout << '\n';
+    return Nil{};
+}
 
 // the int and float cases share the same shape, so each gets its own little
 // helper instead of one big switch that has to keep re-checking the operand
@@ -144,7 +164,18 @@ bool compare(TokenKind op, const Value& lhs, const Value& rhs) {
 // are shared_ptrs so any function declared later can grab a handle and keep the
 // scope it was born in alive for as long as the function value sticks around.
 Interpreter::Interpreter()
-    : globals_(std::make_shared<Environment>()), current_(globals_) {}
+    : globals_(std::make_shared<Environment>()), current_(globals_) {
+    register_builtins();
+}
+
+// build each builtin value and bind it in the globals. only print for now; the
+// timing builtin joins it in the next step and slots in right here.
+void Interpreter::register_builtins() {
+    auto print = std::make_shared<NativeFn>();
+    print->name = "print";
+    print->call = builtin_print;
+    globals_->define("print", print);
+}
 
 void Interpreter::interpret(std::vector<std::unique_ptr<Stmt>>& program) {
     for (auto& stmt : program) {
@@ -249,19 +280,29 @@ void Interpreter::visit_unary(UnaryExpr& expr) {
 // for its effects and comes back as nil.
 void Interpreter::visit_call(CallExpr& expr) {
     Value callee = evaluate(*expr.callee);
-    if (!is_function(callee)) {
-        throw std::runtime_error("can only call functions, not " + type_name(callee));
-    }
-    Function fn = std::get<Function>(callee);
-    FnDecl* decl = fn.decl;
 
     // evaluate every argument up front, left to right, before any of them get
-    // bound. that way a later argument can't see a half-built call scope.
+    // bound. that way a later argument can't see a half-built call scope. this runs
+    // ahead of the callable check so both builtins and user functions get the same
+    // ready-made argument list.
     std::vector<Value> arguments;
     arguments.reserve(expr.args.size());
     for (auto& arg : expr.args) {
         arguments.push_back(evaluate(*arg));
     }
+
+    // a builtin has no AST body to walk, so it never touches the scope machinery
+    // below — just call straight into the C++ and take whatever it returns.
+    if (is_native(callee)) {
+        result_ = std::get<std::shared_ptr<NativeFn>>(callee)->call(arguments);
+        return;
+    }
+
+    if (!is_function(callee)) {
+        throw std::runtime_error("can only call functions, not " + type_name(callee));
+    }
+    Function fn = std::get<Function>(callee);
+    FnDecl* decl = fn.decl;
 
     if (arguments.size() != decl->params.size()) {
         throw std::runtime_error("function '" + decl->name + "' takes " +

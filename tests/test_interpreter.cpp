@@ -1,7 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <iostream>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -742,6 +744,103 @@ TEST_CASE("a function closes over a variable from the scope it was declared in",
     program.push_back(block(std::move(outer)));
     std::string err = run_error(interp, program);
     REQUIRE(err.find("division by zero") != std::string::npos);
+}
+
+// swap std::cout's buffer out for a stringstream while a call runs, then hand back
+// everything print wrote. restoring the old buffer in every path keeps a later
+// test from losing its output if something here throws.
+std::string capture_output(Interpreter& interp, CallExpr& call_expr) {
+    std::ostringstream sink;
+    std::streambuf* previous = std::cout.rdbuf(sink.rdbuf());
+    try {
+        interp.evaluate(call_expr);
+    } catch (...) {
+        std::cout.rdbuf(previous);
+        throw;
+    }
+    std::cout.rdbuf(previous);
+    return sink.str();
+}
+
+TEST_CASE("print is available as a builtin in the global scope", "[interp]") {
+    Interpreter interp;
+    IdentifierExpr name(Token(TokenKind::Identifier, "print", 1, 1));
+    Value v = interp.evaluate(name);
+    REQUIRE(is_native(v));
+}
+
+TEST_CASE("calling print returns nil", "[interp]") {
+    Interpreter interp;
+    std::vector<std::unique_ptr<Expr>> args;
+    args.push_back(int_lit("1"));
+    auto c = call_named("print", std::move(args));
+
+    // still redirect so the test run doesn't spew the number onto the terminal.
+    std::ostringstream sink;
+    std::streambuf* previous = std::cout.rdbuf(sink.rdbuf());
+    Value v = interp.evaluate(*c);
+    std::cout.rdbuf(previous);
+
+    REQUIRE(is_nil(v));
+}
+
+TEST_CASE("print writes an integer followed by a newline", "[interp]") {
+    Interpreter interp;
+    std::vector<std::unique_ptr<Expr>> args;
+    args.push_back(int_lit("42"));
+    auto c = call_named("print", std::move(args));
+    REQUIRE(capture_output(interp, *c) == "42\n");
+}
+
+TEST_CASE("print renders each value variant the way the language shows it", "[interp]") {
+    Interpreter interp;
+
+    std::vector<std::unique_ptr<Expr>> num;
+    num.push_back(literal(TokenKind::Float, "3.0"));
+    auto flt = call_named("print", std::move(num));
+    REQUIRE(capture_output(interp, *flt) == "3.0\n");
+
+    std::vector<std::unique_ptr<Expr>> yes;
+    yes.push_back(literal(TokenKind::True, "true"));
+    auto b = call_named("print", std::move(yes));
+    REQUIRE(capture_output(interp, *b) == "true\n");
+
+    std::vector<std::unique_ptr<Expr>> text;
+    text.push_back(literal(TokenKind::String, "hello"));
+    auto s = call_named("print", std::move(text));
+    REQUIRE(capture_output(interp, *s) == "hello\n");
+
+    std::vector<std::unique_ptr<Expr>> nothing;
+    nothing.push_back(literal(TokenKind::Nil, "nil"));
+    auto n = call_named("print", std::move(nothing));
+    REQUIRE(capture_output(interp, *n) == "nil\n");
+}
+
+TEST_CASE("print separates several arguments with a single space", "[interp]") {
+    Interpreter interp;
+    std::vector<std::unique_ptr<Expr>> args;
+    args.push_back(int_lit("1"));
+    args.push_back(int_lit("2"));
+    args.push_back(int_lit("3"));
+    auto c = call_named("print", std::move(args));
+    REQUIRE(capture_output(interp, *c) == "1 2 3\n");
+}
+
+TEST_CASE("print with no arguments just writes a blank line", "[interp]") {
+    Interpreter interp;
+    auto c = call_named("print", {});
+    REQUIRE(capture_output(interp, *c) == "\n");
+}
+
+TEST_CASE("a function value prints with its name", "[interp]") {
+    Interpreter interp;
+    auto program = parse_program("fn add(a, b) { }");
+    interp.interpret(program);
+
+    std::vector<std::unique_ptr<Expr>> args;
+    args.push_back(ident("add"));
+    auto c = call_named("print", std::move(args));
+    REQUIRE(capture_output(interp, *c) == "<fn add>\n");
 }
 
 TEST_CASE("a closure sees the enclosing value at the moment it is called", "[interp]") {

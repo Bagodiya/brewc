@@ -52,6 +52,10 @@ private:
     // statement side reads the same way the expression side does.
     void execute(Stmt& stmt);
 
+    // drop the builtin functions (print, and more later) into the global scope so
+    // a program can call them by name without declaring them first.
+    void register_builtins();
+
     // the outermost scope, alive for the whole run. it's a shared_ptr now so a
     // function declared up here can close over it the same way one declared inside
     // a block closes over its block — every scope is heap-owned, no special case
