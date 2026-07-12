@@ -1,5 +1,6 @@
 #include "brewc/interpreter.h"
 
+#include <chrono>
 #include <cstddef>
 #include <iostream>
 #include <memory>
@@ -26,6 +27,20 @@ Value builtin_print(const std::vector<Value>& args) {
     }
     std::cout << '\n';
     return Nil{};
+}
+
+// clock() hands back a number of seconds so a program can time itself: grab it
+// once before the work and once after, then subtract. steady_clock is the right
+// pick here because it never jumps around the way the wall clock can when the
+// system time gets adjusted, so a difference between two readings is always a
+// real elapsed duration. the zero point is arbitrary, but that doesn't matter
+// since only the gap between two calls is ever meaningful. any arguments are
+// ignored — clock doesn't take any.
+Value builtin_clock(const std::vector<Value>& args) {
+    (void)args;
+    auto now = std::chrono::steady_clock::now().time_since_epoch();
+    double seconds = std::chrono::duration<double>(now).count();
+    return seconds;
 }
 
 // the int and float cases share the same shape, so each gets its own little
@@ -168,13 +183,18 @@ Interpreter::Interpreter()
     register_builtins();
 }
 
-// build each builtin value and bind it in the globals. only print for now; the
-// timing builtin joins it in the next step and slots in right here.
+// build each builtin value and bind it in the globals so a program can reach them
+// by name without declaring anything. print writes values out; clock is for timing.
 void Interpreter::register_builtins() {
     auto print = std::make_shared<NativeFn>();
     print->name = "print";
     print->call = builtin_print;
     globals_->define("print", print);
+
+    auto clock = std::make_shared<NativeFn>();
+    clock->name = "clock";
+    clock->call = builtin_clock;
+    globals_->define("clock", clock);
 }
 
 void Interpreter::interpret(std::vector<std::unique_ptr<Stmt>>& program) {

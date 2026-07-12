@@ -869,3 +869,22 @@ TEST_CASE("a closure sees the enclosing value at the moment it is called", "[int
     std::string err = run_error(interp, program);
     REQUIRE(err.find("division by zero") != std::string::npos);
 }
+
+TEST_CASE("clock returns a float number of seconds", "[interp]") {
+    Interpreter interp;
+    auto c = call_named("clock", {});
+    Value v = interp.evaluate(*c);
+    REQUIRE(is_float(v));
+}
+
+TEST_CASE("clock does not go backwards between two calls", "[interp]") {
+    Interpreter interp;
+    // two readings back to back. steady_clock never runs backwards, so the second
+    // reading has to be at least as large as the first. can't check for a strict
+    // increase since the two calls might land inside the same clock tick.
+    auto first = call_named("clock", {});
+    double before = std::get<double>(interp.evaluate(*first));
+    auto second = call_named("clock", {});
+    double after = std::get<double>(interp.evaluate(*second));
+    REQUIRE(after >= before);
+}
