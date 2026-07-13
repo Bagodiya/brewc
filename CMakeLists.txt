@@ -23,6 +23,7 @@ add_executable(brewc
     src/ast_printer.cpp
     src/value.cpp
     src/environment.cpp
+    src/runtime_error.cpp
     src/interpreter.cpp
     src/repl.cpp
 )

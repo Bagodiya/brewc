@@ -214,6 +214,14 @@ void Interpreter::execute(Stmt& stmt) {
     stmt.accept(*this);
 }
 
+// every runtime failure funnels through here. we copy call_stack_ as it stands
+// so the trace freezes the calls that were still open, then throw. the copy
+// matters: the frames get popped as the exception unwinds back up, so grabbing
+// them now is the only chance to keep the full chain.
+void Interpreter::fail(const std::string& message, const Token& where) {
+    throw RuntimeError(message, where.line, where.column, call_stack_);
+}
+
 // the rest are still stubs for now. they get real bodies over the next few
 // steps. the casts to void just keep -Wunused-parameter quiet until then.
 
@@ -254,7 +262,7 @@ void Interpreter::visit_literal(LiteralExpr& expr) {
 void Interpreter::visit_identifier(IdentifierExpr& expr) {
     Value* slot = current_->get(expr.name);
     if (slot == nullptr) {
-        throw std::runtime_error("undefined variable '" + expr.name + "'");
+        fail("undefined variable '" + expr.name + "'", expr.token);
     }
     result_ = *slot;
 }
@@ -267,24 +275,34 @@ void Interpreter::visit_binary(BinaryExpr& expr) {
     Value lhs = evaluate(*expr.left);
     Value rhs = evaluate(*expr.right);
 
-    // comparisons split off here before the arithmetic paths, since they always
-    // come back as a bool no matter what the operands were.
-    if (is_comparison(expr.op.kind)) {
-        result_ = compare(expr.op.kind, lhs, rhs);
-        return;
+    // the helpers below throw a bare message when something's off (divide by
+    // zero, comparing things that can't be ordered, ...). they don't know where in
+    // the source we are, so catch that here where we still have the operator token
+    // and re-throw it through fail() with the location and stack attached. a nested
+    // evaluate() above already ran outside this try, so its own errors keep their
+    // own position instead of getting stamped with this operator's.
+    try {
+        // comparisons split off here before the arithmetic paths, since they always
+        // come back as a bool no matter what the operands were.
+        if (is_comparison(expr.op.kind)) {
+            result_ = compare(expr.op.kind, lhs, rhs);
+            return;
+        }
+
+        if (is_int(lhs) && is_int(rhs)) {
+            result_ = apply_int(expr.op.kind, std::get<int64_t>(lhs), std::get<int64_t>(rhs));
+            return;
+        }
+        if (is_float(lhs) && is_float(rhs)) {
+            result_ = apply_float(expr.op.kind, std::get<double>(lhs), std::get<double>(rhs));
+            return;
+        }
+    } catch (const std::runtime_error& e) {
+        fail(e.what(), expr.op);
     }
 
-    if (is_int(lhs) && is_int(rhs)) {
-        result_ = apply_int(expr.op.kind, std::get<int64_t>(lhs), std::get<int64_t>(rhs));
-        return;
-    }
-    if (is_float(lhs) && is_float(rhs)) {
-        result_ = apply_float(expr.op.kind, std::get<double>(lhs), std::get<double>(rhs));
-        return;
-    }
-
-    throw std::runtime_error("cannot apply '" + expr.op.lexeme + "' to " + type_name(lhs) +
-                             " and " + type_name(rhs));
+    fail("cannot apply '" + expr.op.lexeme + "' to " + type_name(lhs) + " and " + type_name(rhs),
+         expr.op);
 }
 
 void Interpreter::visit_unary(UnaryExpr& expr) {
@@ -319,15 +337,15 @@ void Interpreter::visit_call(CallExpr& expr) {
     }
 
     if (!is_function(callee)) {
-        throw std::runtime_error("can only call functions, not " + type_name(callee));
+        fail("can only call functions, not " + type_name(callee), expr.paren);
     }
     Function fn = std::get<Function>(callee);
     FnDecl* decl = fn.decl;
 
     if (arguments.size() != decl->params.size()) {
-        throw std::runtime_error("function '" + decl->name + "' takes " +
-                                 std::to_string(decl->params.size()) + " arguments but got " +
-                                 std::to_string(arguments.size()));
+        fail("function '" + decl->name + "' takes " + std::to_string(decl->params.size()) +
+                 " arguments but got " + std::to_string(arguments.size()),
+             expr.paren);
     }
 
     // hang the call scope off the scope the function was declared in — its
@@ -340,15 +358,21 @@ void Interpreter::visit_call(CallExpr& expr) {
     }
 
     // same save/restore dance the block does, so a throw partway through the body
-    // still leaves current_ pointing back at the caller's scope.
+    // still leaves current_ pointing back at the caller's scope. the trace frame
+    // rides along with it: we push before the body runs and pop after, and the
+    // catch pops too so an error unwinding through here doesn't leave a stale frame
+    // behind (the RuntimeError already grabbed its own copy of the stack anyway).
     std::shared_ptr<Environment> outer = current_;
     current_ = call_scope;
+    call_stack_.push_back(TraceFrame{decl->name, expr.paren.line});
     try {
         execute(*decl->body);
     } catch (...) {
+        call_stack_.pop_back();
         current_ = outer;
         throw;
     }
+    call_stack_.pop_back();
     current_ = outer;
 
     result_ = Nil{};

@@ -16,11 +16,13 @@ add_executable(brewc_tests
     test_value.cpp
     test_environment.cpp
     test_interpreter.cpp
+    test_runtime_error.cpp
     ${CMAKE_SOURCE_DIR}/src/lexer.cpp
     ${CMAKE_SOURCE_DIR}/src/parser.cpp
     ${CMAKE_SOURCE_DIR}/src/ast_printer.cpp
     ${CMAKE_SOURCE_DIR}/src/value.cpp
     ${CMAKE_SOURCE_DIR}/src/environment.cpp
+    ${CMAKE_SOURCE_DIR}/src/runtime_error.cpp
     ${CMAKE_SOURCE_DIR}/src/interpreter.cpp
 )
 

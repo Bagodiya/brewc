@@ -6,6 +6,7 @@
 
 #include "brewc/ast.h"
 #include "brewc/environment.h"
+#include "brewc/runtime_error.h"
 #include "brewc/value.h"
 
 namespace brewc {
@@ -56,6 +57,12 @@ private:
     // a program can call them by name without declaring them first.
     void register_builtins();
 
+    // bail out of the run with a RuntimeError. it stamps the message with the
+    // source position from `where` and takes a snapshot of the call stack as it
+    // stands right now, so whoever catches it can print where things went wrong
+    // and how we got there. marked noreturn because it always throws.
+    [[noreturn]] void fail(const std::string& message, const Token& where);
+
     // the outermost scope, alive for the whole run. it's a shared_ptr now so a
     // function declared up here can close over it the same way one declared inside
     // a block closes over its block — every scope is heap-owned, no special case
@@ -66,6 +73,11 @@ private:
     // then puts it back.
     std::shared_ptr<Environment> current_;
     Value result_ = Nil{}; // the most recent expression result, ferried out of visit_*
+
+    // the functions we're currently inside, oldest at the front. a call pushes a
+    // frame before it runs the body and pops it after, so at any moment this is
+    // the live stack an error can copy into its trace.
+    std::vector<TraceFrame> call_stack_;
 };
 
 } // namespace brewc
