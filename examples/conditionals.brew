@@ -1,0 +1,10 @@
+fn describe(n) {
+    if n > 0 {
+        let _ = print("positive")
+    } else {
+        let _ = print("zero or less")
+    }
+}
+
+let first = describe(7)
+let second = describe(0)

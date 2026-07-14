@@ -17,6 +17,7 @@ add_executable(brewc_tests
     test_environment.cpp
     test_interpreter.cpp
     test_runtime_error.cpp
+    test_e2e.cpp
     ${CMAKE_SOURCE_DIR}/src/lexer.cpp
     ${CMAKE_SOURCE_DIR}/src/parser.cpp
     ${CMAKE_SOURCE_DIR}/src/ast_printer.cpp
@@ -28,6 +29,11 @@ add_executable(brewc_tests
 
 target_link_libraries(brewc_tests PRIVATE Catch2::Catch2WithMain)
 target_include_directories(brewc_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+# the end-to-end tests read real .brew files off disk, so hand them the path to
+# the examples folder instead of guessing it from the working directory.
+target_compile_definitions(brewc_tests PRIVATE
+    BREWC_EXAMPLES_DIR="${CMAKE_SOURCE_DIR}/examples")
 
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)

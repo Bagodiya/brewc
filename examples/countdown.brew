@@ -1,0 +1,8 @@
+fn countdown(n) {
+    if n > 0 {
+        let _ = print(n)
+        let next = countdown(n - 1)
+    }
+}
+
+let run = countdown(3)
