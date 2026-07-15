@@ -1,0 +1,10 @@
+fn fib(n, a, b) {
+    if n == 0 {
+        let _ = print(a)
+    } else {
+        let next = fib(n - 1, b, a + b)
+    }
+}
+
+let tenth = fib(10, 0, 1)
+let twentieth = fib(20, 0, 1)

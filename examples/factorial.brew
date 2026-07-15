@@ -1,0 +1,10 @@
+fn factorial(n, acc) {
+    if n <= 1 {
+        let _ = print(acc)
+    } else {
+        let next = factorial(n - 1, acc * n)
+    }
+}
+
+let small = factorial(5, 1)
+let big = factorial(10, 1)

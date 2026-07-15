@@ -89,3 +89,15 @@ TEST_CASE("countdown example recurses down to one", "[e2e]") {
 TEST_CASE("conditionals example takes the branch matching its input", "[e2e]") {
     REQUIRE(run_example("conditionals.brew") == "positive\nzero or less\n");
 }
+
+TEST_CASE("factorial example multiplies down to the base case", "[e2e]") {
+    // 5! then 10!. the accumulator carries the product down the recursion and the
+    // base case is what prints, since a call still hands back nil.
+    REQUIRE(run_example("factorial.brew") == "120\n3628800\n");
+}
+
+TEST_CASE("fib example walks the pair down to the nth number", "[e2e]") {
+    // fib(10) and fib(20). each call shifts the pair along one place instead of
+    // branching twice, so it stays linear.
+    REQUIRE(run_example("fib.brew") == "55\n6765\n");
+}
