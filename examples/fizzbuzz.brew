@@ -1,0 +1,16 @@
+fn fizzbuzz(n, limit) {
+    if n <= limit {
+        if n % 15 == 0 {
+            let _ = print("fizzbuzz")
+        } else if n % 3 == 0 {
+            let _ = print("fizz")
+        } else if n % 5 == 0 {
+            let _ = print("buzz")
+        } else {
+            let _ = print(n)
+        }
+        let next = fizzbuzz(n + 1, limit)
+    }
+}
+
+let run = fizzbuzz(1, 15)

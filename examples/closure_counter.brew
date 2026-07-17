@@ -1,0 +1,12 @@
+fn make_counter(base) {
+    fn tick(n) {
+        let _ = print(base + n)
+    }
+
+    let a = tick(1)
+    let b = tick(2)
+    let c = tick(3)
+}
+
+let tens = make_counter(10)
+let hundreds = make_counter(100)

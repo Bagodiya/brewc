@@ -101,3 +101,16 @@ TEST_CASE("fib example walks the pair down to the nth number", "[e2e]") {
     // branching twice, so it stays linear.
     REQUIRE(run_example("fib.brew") == "55\n6765\n");
 }
+
+TEST_CASE("fizzbuzz example runs the usual one to fifteen", "[e2e]") {
+    // multiples of 15 print fizzbuzz, then 3s and 5s on their own, everything else
+    // is just the number. 15 has to be checked before 3 and 5 or it never shows.
+    REQUIRE(run_example("fizzbuzz.brew") ==
+            "1\n2\nfizz\n4\nbuzz\nfizz\n7\n8\nfizz\nbuzz\n11\nfizz\n13\n14\nfizzbuzz\n");
+}
+
+TEST_CASE("closure counter keeps each captured base separate", "[e2e]") {
+    // tick reads base out of the make_counter call it was born in, so the tens run
+    // adds onto 10 and the hundreds run adds onto 100 with no bleed between them.
+    REQUIRE(run_example("closure_counter.brew") == "11\n12\n13\n101\n102\n103\n");
+}
