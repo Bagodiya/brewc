@@ -18,6 +18,7 @@ add_executable(brewc_tests
     test_interpreter.cpp
     test_runtime_error.cpp
     test_e2e.cpp
+    test_runner.cpp
     ${CMAKE_SOURCE_DIR}/src/lexer.cpp
     ${CMAKE_SOURCE_DIR}/src/parser.cpp
     ${CMAKE_SOURCE_DIR}/src/ast_printer.cpp
@@ -25,6 +26,7 @@ add_executable(brewc_tests
     ${CMAKE_SOURCE_DIR}/src/environment.cpp
     ${CMAKE_SOURCE_DIR}/src/runtime_error.cpp
     ${CMAKE_SOURCE_DIR}/src/interpreter.cpp
+    ${CMAKE_SOURCE_DIR}/src/runner.cpp
 )
 
 target_link_libraries(brewc_tests PRIVATE Catch2::Catch2WithMain)

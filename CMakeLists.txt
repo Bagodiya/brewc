@@ -26,6 +26,7 @@ add_executable(brewc
     src/runtime_error.cpp
     src/interpreter.cpp
     src/repl.cpp
+    src/runner.cpp
 )
 target_include_directories(brewc PRIVATE include)
 
