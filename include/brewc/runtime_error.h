@@ -47,6 +47,12 @@ private:
 // that case there's just the one line and no stack section.
 std::string format_error(const RuntimeError& err);
 
+// same report, but with the offending source line and a caret slipped in under
+// the first line so you can see the exact spot without opening the file. the
+// stack trace still comes after that. when the position can't be found in the
+// source this falls back to the plain format_error output.
+std::string format_error(const RuntimeError& err, const std::string& source);
+
 } // namespace brewc
 
 #endif

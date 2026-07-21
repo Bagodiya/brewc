@@ -24,6 +24,7 @@ add_executable(brewc
     src/value.cpp
     src/environment.cpp
     src/runtime_error.cpp
+    src/source_snippet.cpp
     src/interpreter.cpp
     src/repl.cpp
     src/runner.cpp

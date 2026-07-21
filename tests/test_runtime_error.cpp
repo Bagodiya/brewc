@@ -143,3 +143,19 @@ TEST_CASE("format_error leaves out the stack section for a top-level error", "[r
     REQUIRE(report.find("runtime error: division by zero") != std::string::npos);
     REQUIRE(report.find("stack trace:") == std::string::npos);
 }
+
+TEST_CASE("format_error with the source shows the offending line", "[runtime]") {
+    RuntimeError err = run_and_catch(kNestedBoom);
+    std::string report = format_error(err, kNestedBoom);
+
+    // the caret block sits between the message and the stack trace.
+    REQUIRE(report.find("  2 |   let x = 1 / 0") != std::string::npos);
+    REQUIRE(report.find("^") != std::string::npos);
+    REQUIRE(report.find("  2 | ") < report.find("stack trace:"));
+}
+
+TEST_CASE("format_error with the source falls back when it can't place the error",
+          "[runtime]") {
+    RuntimeError err("something broke", 0, 0, {});
+    REQUIRE(format_error(err, "let x = 1\n") == format_error(err));
+}

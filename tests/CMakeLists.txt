@@ -17,6 +17,7 @@ add_executable(brewc_tests
     test_environment.cpp
     test_interpreter.cpp
     test_runtime_error.cpp
+    test_source_snippet.cpp
     test_e2e.cpp
     test_runner.cpp
     ${CMAKE_SOURCE_DIR}/src/lexer.cpp
@@ -25,6 +26,7 @@ add_executable(brewc_tests
     ${CMAKE_SOURCE_DIR}/src/value.cpp
     ${CMAKE_SOURCE_DIR}/src/environment.cpp
     ${CMAKE_SOURCE_DIR}/src/runtime_error.cpp
+    ${CMAKE_SOURCE_DIR}/src/source_snippet.cpp
     ${CMAKE_SOURCE_DIR}/src/interpreter.cpp
     ${CMAKE_SOURCE_DIR}/src/runner.cpp
 )

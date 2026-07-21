@@ -9,6 +9,7 @@
 #include "brewc/lexer.h"
 #include "brewc/parser.h"
 #include "brewc/runtime_error.h"
+#include "brewc/source_snippet.h"
 #include "brewc/token.h"
 
 namespace brewc {
@@ -33,6 +34,18 @@ std::vector<Token> lex_all(const std::string& source) {
     return tokens;
 }
 
+// print an error message and, when we know where it came from, the source line
+// with a caret under the spot. the snippet comes back empty for positions we
+// can't place, and then this is just the message on its own.
+void report(const std::string& message, const std::string& source, int line,
+            int column) {
+    std::cerr << message << "\n";
+    std::string snippet = source_snippet(source, line, column);
+    if (!snippet.empty()) {
+        std::cerr << snippet << "\n";
+    }
+}
+
 } // namespace
 
 int run_file(const std::string& path) {
@@ -55,7 +68,8 @@ int run_file(const std::string& path) {
     // before running it instead of half-executing a broken file.
     if (!parser.errors().empty()) {
         for (const auto& err : parser.errors()) {
-            std::cerr << "error: " << err.what() << "\n";
+            report(std::string("error: ") + err.what(), source, err.line(),
+                   err.column());
         }
         return 1;
     }
@@ -64,7 +78,9 @@ int run_file(const std::string& path) {
     try {
         interp.interpret(program);
     } catch (const RuntimeError& err) {
-        std::cerr << format_error(err) << "\n";
+        // this overload already tucks the caret line in under the message, so it
+        // goes straight out instead of through report().
+        std::cerr << format_error(err, source) << "\n";
         return 1;
     }
     return 0;
