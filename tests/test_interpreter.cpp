@@ -205,6 +205,55 @@ TEST_CASE("arithmetic on non-numbers is an error", "[interp]") {
     REQUIRE_THROWS_AS(interp.evaluate(*bad), std::runtime_error);
 }
 
+TEST_CASE("plus on two strings joins them", "[interp]") {
+    Interpreter interp;
+    auto lhs = literal(TokenKind::String, "he");
+    auto rhs = literal(TokenKind::String, "llo");
+    auto joined = binary(std::move(lhs), TokenKind::Plus, "+", std::move(rhs));
+    Value v = interp.evaluate(*joined);
+    REQUIRE(is_string(v));
+    REQUIRE(std::get<std::string>(v) == "hello");
+}
+
+TEST_CASE("joining with an empty string leaves the other side alone", "[interp]") {
+    Interpreter interp;
+    auto lhs = literal(TokenKind::String, "brew");
+    auto rhs = literal(TokenKind::String, "");
+    auto joined = binary(std::move(lhs), TokenKind::Plus, "+", std::move(rhs));
+    REQUIRE(std::get<std::string>(interp.evaluate(*joined)) == "brew");
+}
+
+TEST_CASE("concatenation nests left to right", "[interp]") {
+    Interpreter interp;
+    // ("a" + "b") + "c", the shape the parser builds for a + b + c.
+    auto ab = binary(literal(TokenKind::String, "a"), TokenKind::Plus, "+",
+                     literal(TokenKind::String, "b"));
+    auto abc = binary(std::move(ab), TokenKind::Plus, "+", literal(TokenKind::String, "c"));
+    REQUIRE(std::get<std::string>(interp.evaluate(*abc)) == "abc");
+}
+
+TEST_CASE("only plus works between two strings", "[interp]") {
+    Interpreter interp;
+    auto bad = binary(literal(TokenKind::String, "a"), TokenKind::Minus, "-",
+                      literal(TokenKind::String, "b"));
+    REQUIRE_THROWS_AS(interp.evaluate(*bad), std::runtime_error);
+}
+
+TEST_CASE("adding a string to a number is still an error", "[interp]") {
+    Interpreter interp;
+    auto bad = binary(literal(TokenKind::String, "a"), TokenKind::Plus, "+", int_lit("1"));
+    REQUIRE_THROWS_AS(interp.evaluate(*bad), std::runtime_error);
+}
+
+TEST_CASE("strings concatenate through a parsed program", "[interp]") {
+    auto program = parse_program("let greeting = \"hi \" + \"there\"; print(greeting);");
+    Interpreter interp;
+    REQUIRE_NOTHROW(interp.interpret(program));
+
+    IdentifierExpr id(Token(TokenKind::Identifier, "greeting", 1, 1));
+    REQUIRE(std::get<std::string>(interp.evaluate(id)) == "hi there");
+}
+
 TEST_CASE("less-than on ints gives a bool", "[interp]") {
     Interpreter interp;
 

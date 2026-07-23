@@ -269,8 +269,8 @@ void Interpreter::visit_identifier(IdentifierExpr& expr) {
 
 // evaluate both sides first, then run the operator. arithmetic only makes sense
 // on numbers right now, so two ints give an int and two floats give a float.
-// mixing the two (or throwing a string/bool in) is an error for now — promotion
-// and string handling land in their own later steps.
+// `+` does double duty: two strings glue together instead. mixing an int and a
+// float is still an error here — promotion lands in its own later step.
 void Interpreter::visit_binary(BinaryExpr& expr) {
     Value lhs = evaluate(*expr.left);
     Value rhs = evaluate(*expr.right);
@@ -286,6 +286,14 @@ void Interpreter::visit_binary(BinaryExpr& expr) {
         // come back as a bool no matter what the operands were.
         if (is_comparison(expr.op.kind)) {
             result_ = compare(expr.op.kind, lhs, rhs);
+            return;
+        }
+
+        // "he" + "llo" makes a new string. only + means anything between two
+        // strings, so - or * on them drops through to the error at the bottom
+        // the same as any other bad pairing.
+        if (is_string(lhs) && is_string(rhs) && expr.op.kind == TokenKind::Plus) {
+            result_ = std::get<std::string>(lhs) + std::get<std::string>(rhs);
             return;
         }
 
