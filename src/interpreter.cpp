@@ -87,6 +87,22 @@ double apply_float(TokenKind op, double a, double b) {
     }
 }
 
+bool is_number(const Value& value) {
+    return is_int(value) || is_float(value);
+}
+
+// widen a number to a double so an int and a float have one type to meet in.
+// past 2^53 an int64 has more precision than a double does, so a very large int
+// loses its low bits on the way through. that only happens once a float is in
+// the expression and there's nothing to do about it short of a bignum, so it's
+// the same deal every other language with one float type makes.
+double to_double(const Value& value) {
+    if (is_int(value)) {
+        return static_cast<double>(std::get<int64_t>(value));
+    }
+    return std::get<double>(value);
+}
+
 bool is_comparison(TokenKind op) {
     switch (op) {
     case TokenKind::EqualEqual:
@@ -156,11 +172,14 @@ bool values_equal(const Value& a, const Value& b) {
 // six; everything else only gets == and !=, since ordering strings or bools
 // isn't something the language promises yet.
 bool compare(TokenKind op, const Value& lhs, const Value& rhs) {
+    // two ints compare as ints so nothing gets rounded on the way. any other pair
+    // of numbers goes through doubles, which covers float against float as well as
+    // the mixed case, so 1 < 1.5 answers instead of erroring out.
     if (is_int(lhs) && is_int(rhs)) {
         return compare_numbers(op, std::get<int64_t>(lhs), std::get<int64_t>(rhs));
     }
-    if (is_float(lhs) && is_float(rhs)) {
-        return compare_numbers(op, std::get<double>(lhs), std::get<double>(rhs));
+    if (is_number(lhs) && is_number(rhs)) {
+        return compare_numbers(op, to_double(lhs), to_double(rhs));
     }
 
     if (op == TokenKind::EqualEqual) {
@@ -268,9 +287,8 @@ void Interpreter::visit_identifier(IdentifierExpr& expr) {
 }
 
 // evaluate both sides first, then run the operator. arithmetic only makes sense
-// on numbers right now, so two ints give an int and two floats give a float.
-// `+` does double duty: two strings glue together instead. mixing an int and a
-// float is still an error here — promotion lands in its own later step.
+// on numbers right now: two ints give an int, and anything with a float in it
+// gives a float. `+` does double duty — two strings glue together instead.
 void Interpreter::visit_binary(BinaryExpr& expr) {
     Value lhs = evaluate(*expr.left);
     Value rhs = evaluate(*expr.right);
@@ -301,8 +319,13 @@ void Interpreter::visit_binary(BinaryExpr& expr) {
             result_ = apply_int(expr.op.kind, std::get<int64_t>(lhs), std::get<int64_t>(rhs));
             return;
         }
-        if (is_float(lhs) && is_float(rhs)) {
-            result_ = apply_float(expr.op.kind, std::get<double>(lhs), std::get<double>(rhs));
+
+        // anything else numeric ends up here: float with float, or one of each. the
+        // int side gets widened and the float rules take over, so 1 + 2.5 is 3.5.
+        // the answer is a float even when it lands on a whole number, since 1 + 1.0
+        // giving back an int would quietly throw away the .0 the user wrote.
+        if (is_number(lhs) && is_number(rhs)) {
+            result_ = apply_float(expr.op.kind, to_double(lhs), to_double(rhs));
             return;
         }
     } catch (const std::runtime_error& e) {

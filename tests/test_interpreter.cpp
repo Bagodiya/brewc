@@ -184,6 +184,50 @@ TEST_CASE("float arithmetic stays a float", "[interp]") {
     REQUIRE(std::get<double>(v) == 3.5);
 }
 
+TEST_CASE("an int and a float mix into a float", "[interp]") {
+    Interpreter interp;
+
+    auto sum = binary(int_lit("1"), TokenKind::Plus, "+", literal(TokenKind::Float, "2.5"));
+    Value v = interp.evaluate(*sum);
+    REQUIRE(is_float(v));
+    REQUIRE(std::get<double>(v) == 3.5);
+
+    // the other way round too, the float doesn't have to be on the right.
+    auto diff = binary(literal(TokenKind::Float, "0.5"), TokenKind::Minus, "-", int_lit("2"));
+    REQUIRE(std::get<double>(interp.evaluate(*diff)) == -1.5);
+}
+
+TEST_CASE("a whole-looking mixed result is still a float", "[interp]") {
+    Interpreter interp;
+    // 1 + 1.0 is 2.0, not 2. handing back an int would drop the .0 the user wrote.
+    auto sum = binary(int_lit("1"), TokenKind::Plus, "+", literal(TokenKind::Float, "1.0"));
+    Value v = interp.evaluate(*sum);
+    REQUIRE(is_float(v));
+    REQUIRE(std::get<double>(v) == 2.0);
+}
+
+TEST_CASE("mixed division does not truncate", "[interp]") {
+    Interpreter interp;
+    // 7 / 2 on two ints is 3, but once a float shows up we're in float division.
+    auto quot = binary(int_lit("7"), TokenKind::Slash, "/", literal(TokenKind::Float, "2.0"));
+    REQUIRE(std::get<double>(interp.evaluate(*quot)) == 3.5);
+}
+
+TEST_CASE("modulo still refuses floats", "[interp]") {
+    Interpreter interp;
+    auto bad = binary(int_lit("7"), TokenKind::Percent, "%", literal(TokenKind::Float, "2.0"));
+    REQUIRE_THROWS_AS(interp.evaluate(*bad), std::runtime_error);
+}
+
+TEST_CASE("promotion carries through a nested expression", "[interp]") {
+    Interpreter interp;
+    // 2 * (1 + 0.5). the inner add promotes, and the multiply then sees a float on
+    // one side and stays in floats.
+    auto inner = binary(int_lit("1"), TokenKind::Plus, "+", literal(TokenKind::Float, "0.5"));
+    auto expr = binary(int_lit("2"), TokenKind::Star, "*", std::move(inner));
+    REQUIRE(std::get<double>(interp.evaluate(*expr)) == 3.0);
+}
+
 TEST_CASE("nested arithmetic respects the tree shape", "[interp]") {
     Interpreter interp;
     // 2 + 3 * 4 built as 2 + (3 * 4), so the result is 14, not 20.
@@ -297,6 +341,32 @@ TEST_CASE("comparing floats works the same way", "[interp]") {
     Value v = interp.evaluate(*lt);
     REQUIRE(is_bool(v));
     REQUIRE(std::get<bool>(v) == true);
+}
+
+TEST_CASE("an int and a float compare against each other", "[interp]") {
+    Interpreter interp;
+
+    auto lt = binary(int_lit("1"), TokenKind::Less, "<", literal(TokenKind::Float, "1.5"));
+    REQUIRE(std::get<bool>(interp.evaluate(*lt)) == true);
+
+    auto gt = binary(literal(TokenKind::Float, "2.5"), TokenKind::Greater, ">", int_lit("2"));
+    REQUIRE(std::get<bool>(interp.evaluate(*gt)) == true);
+
+    // 2 and 2.0 are the same number, so equality has to agree.
+    auto eq = binary(int_lit("2"), TokenKind::EqualEqual, "==", literal(TokenKind::Float, "2.0"));
+    REQUIRE(std::get<bool>(interp.evaluate(*eq)) == true);
+
+    auto ne = binary(int_lit("2"), TokenKind::BangEqual, "!=", literal(TokenKind::Float, "2.5"));
+    REQUIRE(std::get<bool>(interp.evaluate(*ne)) == true);
+}
+
+TEST_CASE("mixed numbers promote through a parsed program", "[interp]") {
+    auto program = parse_program("let half = 3 / 2.0");
+    Interpreter interp;
+    REQUIRE_NOTHROW(interp.interpret(program));
+
+    IdentifierExpr id(Token(TokenKind::Identifier, "half", 1, 1));
+    REQUIRE(std::get<double>(interp.evaluate(id)) == 1.5);
 }
 
 TEST_CASE("strings compare by value with == and !=", "[interp]") {

@@ -145,11 +145,24 @@ memorize, and it's the rule `if` and `while` both use.
 
 ## Equality and ordering
 
-Two ints or two floats compare with any of the six operators. Everything else only
-gets `==` and `!=`, and only values of the exact same kind can be equal, so a bool
-is never equal to a string. Trying to order two strings is a runtime error rather
-than something with a made-up answer. Ints and floats don't currently mix — that's
-Step 59.
+Any two numbers compare with all six operators, including an int against a float.
+Everything else only gets `==` and `!=`, and only values of the exact same kind
+can be equal, so a bool is never equal to a string. Trying to order two strings is
+a runtime error rather than something with a made-up answer.
+
+## Numbers and promotion
+
+Two ints stay ints: `7 / 2` is `3` and `%` works. As soon as one side is a float
+the int gets widened to a double and the float rules take over, so `7 / 2.0` is
+`3.5` and `1 + 2.5` is `3.5`. A mixed result is always a float even when it lands
+on a whole number — `1 + 1.0` is `2.0`, since handing back an int there would
+quietly drop the `.0` the user wrote. `%` is the one operator that doesn't go
+along with this; there's no sensible float modulo, so it stays an error.
+
+Two ints also compare as ints rather than through doubles, which keeps large
+values exact. Past 2^53 an `int64_t` holds more precision than a `double` does,
+so a huge int does lose its low bits when a float drags it into the mix. That's
+the same trade every language with a single float type makes.
 
 ## Errors
 
@@ -200,6 +213,4 @@ between two readings ever matters.
   whatever was left in `result_`.
 - `&&` and `||` aren't handled either — they parse, but fall through to the
   "cannot apply" error at the bottom of `visit_binary`.
-- No int/float promotion, mixed arithmetic is an error (Step 59).
-- No string concatenation with `+` (Step 58).
 - No user-visible way to define a builtin.
