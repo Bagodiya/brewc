@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(brewc
-    VERSION 0.0.1
+    VERSION 0.1.0
     LANGUAGES CXX
 )
 
@@ -30,6 +30,10 @@ add_executable(brewc
     src/runner.cpp
 )
 target_include_directories(brewc PRIVATE include)
+
+# keep the version in one place. cmake owns it and the binary just prints
+# whatever it was built with, so the two can't drift apart.
+target_compile_definitions(brewc PRIVATE BREWC_VERSION="${PROJECT_VERSION}")
 
 enable_testing()
 add_subdirectory(tests)

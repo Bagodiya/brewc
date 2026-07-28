@@ -21,8 +21,15 @@ int main(int argc, char* argv[]) {
         return brewc::run_file(argv[2]);
     }
 
+    // accept the dashed spellings too, that's what everyone types first.
+    if (command == "version" || command == "--version" || command == "-v") {
+        std::cout << "brewc " << BREWC_VERSION << "\n";
+        return 0;
+    }
+
     std::cerr << "brewc: unknown command '" << command << "'\n";
     std::cerr << "usage: brewc            start the repl\n";
     std::cerr << "       brewc run <file> run a program\n";
+    std::cerr << "       brewc version    print the version\n";
     return 1;
 }
