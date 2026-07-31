@@ -27,6 +27,7 @@ add_executable(brewc
     src/source_snippet.cpp
     src/interpreter.cpp
     src/chunk.cpp
+    src/disassembler.cpp
     src/repl.cpp
     src/runner.cpp
 )
