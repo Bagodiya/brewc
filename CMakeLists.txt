@@ -28,6 +28,7 @@ add_executable(brewc
     src/interpreter.cpp
     src/chunk.cpp
     src/disassembler.cpp
+    src/compiler.cpp
     src/repl.cpp
     src/runner.cpp
 )

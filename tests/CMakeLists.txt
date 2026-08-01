@@ -22,6 +22,7 @@ add_executable(brewc_tests
     test_runner.cpp
     test_chunk.cpp
     test_disassembler.cpp
+    test_compiler.cpp
     ${CMAKE_SOURCE_DIR}/src/lexer.cpp
     ${CMAKE_SOURCE_DIR}/src/parser.cpp
     ${CMAKE_SOURCE_DIR}/src/ast_printer.cpp
@@ -32,6 +33,7 @@ add_executable(brewc_tests
     ${CMAKE_SOURCE_DIR}/src/interpreter.cpp
     ${CMAKE_SOURCE_DIR}/src/chunk.cpp
     ${CMAKE_SOURCE_DIR}/src/disassembler.cpp
+    ${CMAKE_SOURCE_DIR}/src/compiler.cpp
     ${CMAKE_SOURCE_DIR}/src/runner.cpp
 )
 
