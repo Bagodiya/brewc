@@ -45,8 +45,8 @@ private:
 // convention every visit_* below follows is: whatever you compile, exactly one
 // value is on the stack afterwards.
 //
-// the visit_* bodies are empty stubs for now. the next dozen or so steps fill
-// them in one node type at a time, starting with literals.
+// literals are the only node type wired up so far. the rest of the visit_*
+// bodies are still stubs and get filled in one at a time over the next steps.
 class Compiler : public Visitor, public StmtVisitor {
 public:
     Compiler();
@@ -99,6 +99,14 @@ private:
     // writes placeholder bytes now and fills them in once it knows how far it has
     // to reach.
     void emit_byte(uint8_t byte);
+
+    // put a value in the chunk's pool and emit the Const that pushes it. `where`
+    // is only used if the pool is already full, in which case the compile stops
+    // and points at that token. the check lives here rather than at the call
+    // sites because add_constant reports a full pool by handing back an index
+    // that doesn't exist, and emitting that byte anyway would have the VM push
+    // whatever constant_at decides to give it.
+    void emit_constant(Value value, const Token& where);
 
     // give up on the whole compile with a CompileError pointed at `where`. every
     // failure funnels through here so the location handling stays in one spot,
