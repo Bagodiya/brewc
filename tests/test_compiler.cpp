@@ -67,6 +67,19 @@ Chunk compile_literal(TokenKind kind, const std::string& text, int line = 1, int
     return compiler.compile_expression(literal);
 }
 
+// compile one expression written as source. going through parse_expression means
+// the operators get their real precedence instead of whatever shape a hand-built
+// tree happens to have, which is half of what the binary tests are checking.
+Chunk compile_expr_source(const std::string& source) {
+    Parser parser(lex_all(source));
+    std::unique_ptr<Expr> expr = parser.parse_expression();
+    REQUIRE(parser.errors().empty());
+    REQUIRE(expr != nullptr);
+
+    Compiler compiler;
+    return compiler.compile_expression(*expr);
+}
+
 } // namespace
 
 TEST_CASE("an empty program compiles to a single Return", "[compiler]") {
@@ -187,6 +200,90 @@ TEST_CASE("the same compiler can run twice without carrying bytes over", "[compi
 
     REQUIRE(one.size() == 1);
     REQUIRE(two.size() == 1);
+}
+
+TEST_CASE("an addition compiles to both operands then Add", "[compiler]") {
+    // Const 0, Const 1, Add, Return — the operator comes last because it works off
+    // what the operands already left on the stack.
+    Chunk chunk = compile_expr_source("1 + 2");
+    REQUIRE(chunk.size() == 6);
+    REQUIRE(op_at(chunk, 0) == Opcode::Const);
+    REQUIRE(op_at(chunk, 2) == Opcode::Const);
+    REQUIRE(op_at(chunk, 4) == Opcode::Add);
+    REQUIRE(op_at(chunk, 5) == Opcode::Return);
+}
+
+TEST_CASE("the left operand is pushed before the right one", "[compiler]") {
+    // this is what keeps subtraction from coming out backwards. both constants are
+    // in the pool in the order they were compiled, so the indices in the stream say
+    // which side went first.
+    Chunk chunk = compile_expr_source("7 - 3");
+    REQUIRE(std::get<int64_t>(chunk.constants[chunk.code[1]]) == 7);
+    REQUIRE(std::get<int64_t>(chunk.constants[chunk.code[3]]) == 3);
+    REQUIRE(op_at(chunk, 4) == Opcode::Sub);
+}
+
+TEST_CASE("each arithmetic operator gets its own opcode", "[compiler]") {
+    REQUIRE(op_at(compile_expr_source("1 + 2"), 4) == Opcode::Add);
+    REQUIRE(op_at(compile_expr_source("1 - 2"), 4) == Opcode::Sub);
+    REQUIRE(op_at(compile_expr_source("1 * 2"), 4) == Opcode::Mul);
+    REQUIRE(op_at(compile_expr_source("1 / 2"), 4) == Opcode::Div);
+    REQUIRE(op_at(compile_expr_source("1 % 2"), 4) == Opcode::Mod);
+}
+
+TEST_CASE("precedence decides which opcode is emitted first", "[compiler]") {
+    // 1 + 2 * 3 — the multiply is the right child, so it has to be finished and
+    // sitting on the stack before the Add runs.
+    Chunk chunk = compile_expr_source("1 + 2 * 3");
+    REQUIRE(chunk.size() == 9);
+    REQUIRE(op_at(chunk, 6) == Opcode::Mul);
+    REQUIRE(op_at(chunk, 7) == Opcode::Add);
+}
+
+TEST_CASE("parens override precedence in the bytecode too", "[compiler]") {
+    Chunk chunk = compile_expr_source("(1 + 2) * 3");
+    REQUIRE(op_at(chunk, 4) == Opcode::Add);
+    REQUIRE(op_at(chunk, 7) == Opcode::Mul);
+}
+
+TEST_CASE("a left-nested chain compiles left to right", "[compiler]") {
+    // 1 - 2 - 3 groups as (1 - 2) - 3, so the first Sub lands in the middle of the
+    // stream rather than both of them ending up at the end.
+    Chunk chunk = compile_expr_source("1 - 2 - 3");
+    REQUIRE(op_at(chunk, 4) == Opcode::Sub);
+    REQUIRE(op_at(chunk, 7) == Opcode::Sub);
+}
+
+TEST_CASE("string operands go through the same Add", "[compiler]") {
+    // concatenation is a runtime decision about the values, not a separate
+    // instruction, so the compiler treats it like any other addition.
+    Chunk chunk = compile_expr_source("\"he\" + \"llo\"");
+    REQUIRE(op_at(chunk, 4) == Opcode::Add);
+    REQUIRE(chunk.constants.size() == 2);
+    REQUIRE(is_string(chunk.constants[0]));
+}
+
+TEST_CASE("the operator instruction is stamped with the operator's line", "[compiler]") {
+    // the operands are compiled first and move line_ along with them, so without
+    // setting it back the Add would claim to come from line 3.
+    Chunk chunk = compile_expr_source("1 +\n2");
+    REQUIRE(chunk.line_at(2) == 2);
+    REQUIRE(chunk.line_at(4) == 1);
+}
+
+TEST_CASE("a repeated operand is only stored once", "[compiler]") {
+    // both sides hit the same pool, so `2 * 2` should not burn two slots on the
+    // same number.
+    Chunk chunk = compile_expr_source("2 * 2");
+    REQUIRE(chunk.constants.size() == 1);
+    REQUIRE(chunk.code[1] == chunk.code[3]);
+}
+
+TEST_CASE("an operator with no opcode yet is reported, not skipped", "[compiler]") {
+    // comparisons arrive in the next step. until then they have to fail loudly —
+    // emitting the operands and no operator would leave two values on the stack
+    // and the VM would carry on with the wrong one.
+    REQUIRE_THROWS_AS(compile_expr_source("1 < 2"), CompileError);
 }
 
 TEST_CASE("a compile error says which line and column it came from", "[compiler]") {

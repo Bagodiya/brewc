@@ -36,6 +36,32 @@ Value literal_value(const Token& token) {
     }
 }
 
+// the instruction an arithmetic operator compiles down to, or false if this
+// isn't one of them. the comparison and logical operators go through the same
+// visit_binary but get their own opcodes in the next step, so for now they fall
+// out of here and are reported instead of quietly emitting the wrong thing.
+bool arithmetic_opcode(TokenKind kind, Opcode& out) {
+    switch (kind) {
+    case TokenKind::Plus:
+        out = Opcode::Add;
+        return true;
+    case TokenKind::Minus:
+        out = Opcode::Sub;
+        return true;
+    case TokenKind::Star:
+        out = Opcode::Mul;
+        return true;
+    case TokenKind::Slash:
+        out = Opcode::Div;
+        return true;
+    case TokenKind::Percent:
+        out = Opcode::Mod;
+        return true;
+    default:
+        return false;
+    }
+}
+
 } // namespace
 
 CompileError::CompileError(int line, int column, const std::string& message)
@@ -134,13 +160,42 @@ void Compiler::visit_literal(LiteralExpr& expr) {
     }
 }
 
+// `a + b` becomes: whatever pushes a, whatever pushes b, then one Add. the
+// operator instruction carries no operands at all — it pops the two values the
+// operands left behind and pushes the result, so the same Add works no matter how
+// big the subtrees under it were.
+//
+// the child order matters and is not just convention. the stack hands things back
+// in reverse, so the VM pops the right operand first and the left one second;
+// compiling them the other way round would still run for `a + b` but would give
+// `b - a` for a subtraction, and finding that later from a wrong answer is much
+// worse than getting it right here.
+//
+// nesting takes care of itself. `1 + 2 * 3` parsed with the right precedence has
+// the multiply as the right child, so recursing into it emits Const 2, Const 3,
+// Mul before the Add ever runs, and the Add sees a single value sitting there —
+// exactly what it would see from a plain literal.
+void Compiler::visit_binary(BinaryExpr& expr) {
+    Opcode op;
+    if (!arithmetic_opcode(expr.op.kind, op)) {
+        fail("operator '" + expr.op.lexeme + "' cannot be compiled yet", expr.op);
+    }
+
+    compile_expr(*expr.left);
+    compile_expr(*expr.right);
+
+    // both children stamped their own lines on the way through, so line_ is
+    // wherever the right operand ended. put it back before emitting, or an error
+    // on the Add points at the operand instead of the operator.
+    set_line(expr.op);
+    emit(op);
+}
+
 // everything below is a stub until the step that fills it in. the parameters are
 // cast to void so -Wunused-parameter stays quiet without the names disappearing
 // from the signatures, which would make the diffs in those steps harder to read.
 
 void Compiler::visit_identifier(IdentifierExpr& expr) { (void)expr; }
-
-void Compiler::visit_binary(BinaryExpr& expr) { (void)expr; }
 
 void Compiler::visit_unary(UnaryExpr& expr) { (void)expr; }
 
