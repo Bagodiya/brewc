@@ -5,8 +5,9 @@ covers what the language looks like; this one covers what happens after parsing,
 so it's the file to read before touching interpreter code.
 
 The whole thing is deliberately simple: the parser hands back an AST and we walk
-it, running each node as we reach it. There's no bytecode and no separate compile
-pass yet. That's Phase 5.
+it, running each node as we reach it. This is the path everything actually runs
+through today. A bytecode compiler is being built alongside it in
+`src/compiler.cpp`, but it isn't finished and nothing in the driver calls it yet.
 
 ## The pipeline
 
@@ -73,9 +74,10 @@ parent chain until it finds the name or runs off the top.
 `define` always binds in the current scope, which is how an inner `let` shadows an
 outer variable without disturbing it. `assign` walks outward looking for a binding
 that already exists and refuses to create one, since inventing variables is
-`define`'s job. Nothing in the interpreter calls `assign` yet — there's no
-assignment statement in the language so far, so it's only exercised by
-`tests/test_environment.cpp`.
+`define`'s job. That split is what makes `x = 1` inside a block write to the outer
+`x` while `let x = 1` in the same spot shadows it instead, and it's why assigning
+to a name nobody bound is an error rather than a quiet new global — a typo in an
+assignment should say so.
 
 The interpreter holds two of these: `globals_` for the outermost scope, which
 lives for the whole run, and `current_` for whatever scope we're in right now. A
@@ -134,14 +136,51 @@ observe a half-built call scope.
 Builtins skip most of that. They have no AST body to walk, so `visit_call` hands
 the argument vector straight to the C++ callback and takes whatever comes back.
 
-There's no `return` statement yet, so a user function call always evaluates to
-`nil`.
+## Return
+
+A `return` can be nested any number of blocks, ifs and loops deep, and all of that
+has to be abandoned at once to get the value back to the call. Checking a flag
+after every statement would mean touching `visit_block`, `visit_if` and
+`visit_while` and getting all three right; throwing gets the same job done with
+the unwinding the language already has.
+
+`visit_return` evaluates the value and throws a `ReturnSignal` holding it.
+`visit_call` catches it right where the body was run, which is what stops it at
+that call — otherwise an inner function returning would keep unwinding and return
+out of its caller too. A body that finishes without throwing evaluates to `nil`.
+
+`ReturnSignal` deliberately doesn't derive from `std::exception`, let alone from
+`RuntimeError`. It isn't a failure, and keeping it off that hierarchy means
+nothing that reports errors can mistake it for one. The `catch (...)` blocks that
+restore `current_` still see it and put the scope back on the way past, which is
+exactly what should happen; they just re-throw it afterwards.
+
+A `return` at the top level has no call waiting to catch it, so `visit_return`
+checks for an empty `call_stack_` and fails with a real error instead. Letting it
+through would unwind straight out of `interpret` and end the run with nothing
+printed.
+
+## The REPL and node lifetimes
+
+Worth knowing if you touch `src/repl.cpp`: a `Function` holds a bare `FnDecl*`,
+which is only safe because the parsed program outlives the run. A file gets one
+tree for the whole program, so that holds by itself. The REPL parses a *new* tree
+per line, and dropping it at the end of the line would leave every `fn` declared
+on it pointing at freed memory the next time it was called. So the REPL keeps
+every line's tree in an arena that lives as long as the session does.
 
 ## Truthiness
 
 Only `nil` and a false boolean are falsy. Everything else is truthy, including
 `0` and the empty string. Keeping the rule that small means there's nothing to
-memorize, and it's the rule `if` and `while` both use.
+memorize, and it's the rule `if`, `while`, `!`, `&&` and `||` all use.
+
+`&&` and `||` are handled at the very top of `visit_binary`, before it evaluates
+anything. They have to be: every other operator evaluates both sides up front,
+and these two don't always evaluate the right one. That isn't a speed trick — it's
+what lets `n != 0 && total / n > 1` use its left side to guard its right. Both
+reduce to a bool rather than to whichever operand won, matching the comparisons,
+which always hand back a bool whatever they were given.
 
 ## Equality and ordering
 
@@ -208,9 +247,11 @@ between two readings ever matters.
 
 ## Known gaps
 
-- No `return` statement, so functions run for their effects only.
-- `visit_unary` is still an empty stub, so `-x` and `!x` parse but evaluate to
-  whatever was left in `result_`.
-- `&&` and `||` aren't handled either — they parse, but fall through to the
-  "cannot apply" error at the bottom of `visit_binary`.
+- No arrays, structs or modules.
+- No garbage collector. Values are copied, and a scope lives as long as something
+  holds a `shared_ptr` to it, so a cycle between two closures would never be
+  freed.
 - No user-visible way to define a builtin.
+- The tree-walker re-visits every node on each pass through a loop and pays for
+  the virtual dispatch each time. That's what the bytecode compiler under
+  `src/compiler.cpp` is for; it isn't wired into the driver yet.
