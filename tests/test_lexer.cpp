@@ -495,3 +495,59 @@ TEST_CASE("location is right for tokens spread over two lines", "[lexer]") {
     REQUIRE(second_x.line == 2);
     REQUIRE(second_x.column == 1);
 }
+
+TEST_CASE("lexer skips a line comment", "[lexer]") {
+    Lexer lex("1 // everything here is ignored\n2");
+
+    REQUIRE(lex.next_token().lexeme == "1");
+
+    Token after = lex.next_token();
+    REQUIRE(after.kind == TokenKind::Integer);
+    REQUIRE(after.lexeme == "2");
+    // the comment ran to the newline, so what follows is on the next line.
+    REQUIRE(after.line == 2);
+
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("lexer skips a comment sitting on its own line", "[lexer]") {
+    Lexer lex("// leading note\nlet");
+
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::Let);
+    REQUIRE(t.line == 2);
+}
+
+TEST_CASE("lexer skips several comments and blank lines in a row", "[lexer]") {
+    Lexer lex("// one\n\n  // two\n  x");
+
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::Identifier);
+    REQUIRE(t.lexeme == "x");
+    REQUIRE(t.line == 4);
+    REQUIRE(t.column == 3);
+}
+
+TEST_CASE("a comment running to end of input just ends the stream", "[lexer]") {
+    Lexer lex("x // trailing, no newline after it");
+
+    REQUIRE(lex.next_token().lexeme == "x");
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("a single slash is still division, not a comment", "[lexer]") {
+    Lexer lex("8 / 2");
+
+    REQUIRE(lex.next_token().lexeme == "8");
+    REQUIRE(lex.next_token().kind == TokenKind::Slash);
+    REQUIRE(lex.next_token().lexeme == "2");
+    REQUIRE(lex.next_token().kind == TokenKind::End);
+}
+
+TEST_CASE("// inside a string literal is not a comment", "[lexer]") {
+    Lexer lex("\"http://example.com\"");
+
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::String);
+    REQUIRE(t.lexeme == "http://example.com");
+}

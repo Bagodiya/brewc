@@ -11,8 +11,11 @@ class Lexer {
 public:
     explicit Lexer(std::string_view source);
 
-    // pull the next token off the source. for now this just hands back
-    // an End token until the real scanning lands in later steps.
+    // pull the next token off the source, skipping any whitespace in front of it.
+    // once the source runs out this keeps handing back End, so a caller can loop
+    // on it without checking the position itself. a character that can't start
+    // any token comes back as an Error token rather than throwing, which keeps
+    // the cursor moving and lets the parser report it in context.
     Token next_token();
 
 private:

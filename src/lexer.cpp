@@ -70,8 +70,25 @@ char Lexer::advance() {
 }
 
 Token Lexer::next_token() {
-    while (!is_at_end() && is_space(peek())) {
-        advance();
+    // skip anything that isn't part of a token. whitespace and comments can
+    // alternate any number of times — a comment is usually followed by the
+    // newline that ends it and then the indent of the next line — so this keeps
+    // going until what's in front of us is neither.
+    while (!is_at_end()) {
+        if (is_space(peek())) {
+            advance();
+            continue;
+        }
+        // `//` runs to the end of the line. the newline itself is left alone for
+        // the whitespace branch above to eat, which is what keeps advance() in
+        // charge of counting lines instead of duplicating that here.
+        if (peek() == '/' && peek_next() == '/') {
+            while (!is_at_end() && peek() != '\n') {
+                advance();
+            }
+            continue;
+        }
+        break;
     }
 
     if (is_at_end()) {
