@@ -279,11 +279,81 @@ TEST_CASE("a repeated operand is only stored once", "[compiler]") {
     REQUIRE(chunk.code[1] == chunk.code[3]);
 }
 
+TEST_CASE("a comparison compiles to both operands then the compare", "[compiler]") {
+    // exactly the shape an addition has — the operator only works off what the
+    // operands left behind, so nothing about the layout changes.
+    Chunk chunk = compile_expr_source("1 < 2");
+    REQUIRE(chunk.size() == 6);
+    REQUIRE(op_at(chunk, 0) == Opcode::Const);
+    REQUIRE(op_at(chunk, 2) == Opcode::Const);
+    REQUIRE(op_at(chunk, 4) == Opcode::Less);
+    REQUIRE(op_at(chunk, 5) == Opcode::Return);
+}
+
+TEST_CASE("the four comparisons with an opcode emit just that opcode", "[compiler]") {
+    REQUIRE(op_at(compile_expr_source("1 == 2"), 4) == Opcode::Equal);
+    REQUIRE(op_at(compile_expr_source("1 != 2"), 4) == Opcode::NotEqual);
+    REQUIRE(op_at(compile_expr_source("1 < 2"), 4) == Opcode::Less);
+    REQUIRE(op_at(compile_expr_source("1 > 2"), 4) == Opcode::Greater);
+}
+
+TEST_CASE("<= compiles to Greater followed by Not", "[compiler]") {
+    // a <= b is not (a > b). the flipped opcode is the whole point, so checking
+    // for Less here would be checking for the bug.
+    Chunk chunk = compile_expr_source("1 <= 2");
+    REQUIRE(chunk.size() == 7);
+    REQUIRE(op_at(chunk, 4) == Opcode::Greater);
+    REQUIRE(op_at(chunk, 5) == Opcode::Not);
+    REQUIRE(op_at(chunk, 6) == Opcode::Return);
+}
+
+TEST_CASE(">= compiles to Less followed by Not", "[compiler]") {
+    Chunk chunk = compile_expr_source("1 >= 2");
+    REQUIRE(chunk.size() == 7);
+    REQUIRE(op_at(chunk, 4) == Opcode::Less);
+    REQUIRE(op_at(chunk, 5) == Opcode::Not);
+}
+
+TEST_CASE("a comparison keeps its operands in source order", "[compiler]") {
+    // the same trap subtraction has, and worse here — the operands look
+    // symmetric, so `3 < 8` compiled backwards still runs and just answers wrong.
+    Chunk chunk = compile_expr_source("3 < 8");
+    REQUIRE(std::get<int64_t>(chunk.constants[chunk.code[1]]) == 3);
+    REQUIRE(std::get<int64_t>(chunk.constants[chunk.code[3]]) == 8);
+}
+
+TEST_CASE("the negated form does not flip the operands as well", "[compiler]") {
+    // the inversion happens after the compare, not by swapping the sides. doing
+    // both would cancel out and `3 <= 8` would answer as if it were `8 <= 3`.
+    Chunk chunk = compile_expr_source("3 <= 8");
+    REQUIRE(std::get<int64_t>(chunk.constants[chunk.code[1]]) == 3);
+    REQUIRE(std::get<int64_t>(chunk.constants[chunk.code[3]]) == 8);
+    REQUIRE(op_at(chunk, 4) == Opcode::Greater);
+}
+
+TEST_CASE("arithmetic binds tighter than comparison in the bytecode", "[compiler]") {
+    // 1 + 2 < 4 groups as (1 + 2) < 4, so the Add has to be done before the Less
+    // ever sees a value.
+    Chunk chunk = compile_expr_source("1 + 2 < 4");
+    REQUIRE(op_at(chunk, 4) == Opcode::Add);
+    REQUIRE(op_at(chunk, 7) == Opcode::Less);
+}
+
+TEST_CASE("both instructions of a negated comparison get the operator's line", "[compiler]") {
+    // the operands moved line_ to line 2 on the way past, and the Not is emitted
+    // after the compare, so it is the one most likely to be left stamped wrong.
+    Chunk chunk = compile_expr_source("1 <=\n2");
+    REQUIRE(chunk.line_at(4) == 1);
+    REQUIRE(chunk.line_at(5) == 1);
+}
+
 TEST_CASE("an operator with no opcode yet is reported, not skipped", "[compiler]") {
-    // comparisons arrive in the next step. until then they have to fail loudly —
-    // emitting the operands and no operator would leave two values on the stack
-    // and the VM would carry on with the wrong one.
-    REQUIRE_THROWS_AS(compile_expr_source("1 < 2"), CompileError);
+    // && and || can't be a plain instruction — they short-circuit, which needs a
+    // jump over the right operand, and jumps aren't in yet. until then they have
+    // to fail loudly: emitting the operands and no operator would leave two
+    // values on the stack and the VM would carry on with the wrong one.
+    REQUIRE_THROWS_AS(compile_expr_source("1 && 2"), CompileError);
+    REQUIRE_THROWS_AS(compile_expr_source("1 || 2"), CompileError);
 }
 
 TEST_CASE("a compile error says which line and column it came from", "[compiler]") {

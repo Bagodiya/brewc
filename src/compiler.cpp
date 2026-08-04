@@ -37,9 +37,9 @@ Value literal_value(const Token& token) {
 }
 
 // the instruction an arithmetic operator compiles down to, or false if this
-// isn't one of them. the comparison and logical operators go through the same
-// visit_binary but get their own opcodes in the next step, so for now they fall
-// out of here and are reported instead of quietly emitting the wrong thing.
+// isn't one of them. comparisons are handled just below; && and || go through
+// the same visit_binary but fall out of both and are reported instead of
+// quietly emitting the wrong thing.
 bool arithmetic_opcode(TokenKind kind, Opcode& out) {
     switch (kind) {
     case TokenKind::Plus:
@@ -56,6 +56,45 @@ bool arithmetic_opcode(TokenKind kind, Opcode& out) {
         return true;
     case TokenKind::Percent:
         out = Opcode::Mod;
+        return true;
+    default:
+        return false;
+    }
+}
+
+// same idea for the comparisons, except two of them need a second instruction
+// after the first. `negate` is set when the result has to be flipped with a Not.
+//
+// <= and >= have no opcode of their own on purpose. `a <= b` is the same thing
+// as `not (a > b)`, so emitting Greater and inverting gets the answer without
+// two more entries in the enum and two more cases in the VM's dispatch loop
+// later. it costs one extra byte per comparison at runtime, which is nothing
+// next to keeping the instruction set small.
+//
+// != could have been folded away the same way, but NotEqual is already in the
+// enum, so it stays a single instruction rather than Equal followed by a Not.
+bool comparison_opcode(TokenKind kind, Opcode& out, bool& negate) {
+    negate = false;
+    switch (kind) {
+    case TokenKind::EqualEqual:
+        out = Opcode::Equal;
+        return true;
+    case TokenKind::BangEqual:
+        out = Opcode::NotEqual;
+        return true;
+    case TokenKind::Less:
+        out = Opcode::Less;
+        return true;
+    case TokenKind::Greater:
+        out = Opcode::Greater;
+        return true;
+    case TokenKind::LessEqual:
+        out = Opcode::Greater;
+        negate = true;
+        return true;
+    case TokenKind::GreaterEqual:
+        out = Opcode::Less;
+        negate = true;
         return true;
     default:
         return false;
@@ -175,9 +214,15 @@ void Compiler::visit_literal(LiteralExpr& expr) {
 // the multiply as the right child, so recursing into it emits Const 2, Const 3,
 // Mul before the Add ever runs, and the Add sees a single value sitting there —
 // exactly what it would see from a plain literal.
+//
+// comparisons ride along the same path, since the shape is identical: two
+// operands on the stack, one instruction that pops both and pushes one value
+// back. the only difference is that <= and >= leave a Not behind them, and that
+// still ends with one value on the stack, so the rule holds either way.
 void Compiler::visit_binary(BinaryExpr& expr) {
     Opcode op;
-    if (!arithmetic_opcode(expr.op.kind, op)) {
+    bool negate = false;
+    if (!arithmetic_opcode(expr.op.kind, op) && !comparison_opcode(expr.op.kind, op, negate)) {
         fail("operator '" + expr.op.lexeme + "' cannot be compiled yet", expr.op);
     }
 
@@ -189,6 +234,13 @@ void Compiler::visit_binary(BinaryExpr& expr) {
     // on the Add points at the operand instead of the operator.
     set_line(expr.op);
     emit(op);
+
+    // the Not belongs to the same operator, so it gets the same line — a `<=`
+    // split across two lines shouldn't have its two instructions blaming
+    // different ones.
+    if (negate) {
+        emit(Opcode::Not);
+    }
 }
 
 // everything below is a stub until the step that fills it in. the parameters are
