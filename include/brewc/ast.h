@@ -31,6 +31,7 @@ class IdentifierExpr;
 class BinaryExpr;
 class UnaryExpr;
 class CallExpr;
+class AssignExpr;
 
 // anything that wants to walk the tree (the printer, the interpreter, ...)
 // inherits from this. one visit_* per concrete node type; we keep them pure
@@ -43,6 +44,7 @@ public:
     virtual void visit_binary(BinaryExpr& expr) = 0;
     virtual void visit_unary(UnaryExpr& expr) = 0;
     virtual void visit_call(CallExpr& expr) = 0;
+    virtual void visit_assign(AssignExpr& expr) = 0;
 };
 
 // a literal value straight from the source: 42, 3.14, "hi", true, nil, ...
@@ -117,6 +119,24 @@ public:
     std::vector<std::unique_ptr<Expr>> args;
 };
 
+// `x = <expr>`. assignment is an expression rather than a statement so it can
+// sit anywhere an expression can — the value it evaluates to is the value that
+// got stored, which is what makes `a = b = 0` fall out without extra work.
+// only a bare name can be assigned to for now, so we keep the name token instead
+// of a general target expression; that also means the error for `f() = 1` comes
+// from the parser rather than from something further downstream.
+class AssignExpr : public Expr {
+public:
+    AssignExpr(Token name_tok, std::unique_ptr<Expr> val)
+        : name(name_tok.lexeme), token(std::move(name_tok)), value(std::move(val)) {}
+
+    void accept(Visitor& visitor) override { visitor.visit_assign(*this); }
+
+    std::string name;
+    Token token;
+    std::unique_ptr<Expr> value;
+};
+
 // statements are the other half of the tree. expressions produce a value;
 // statements get run for their effect (binding a name, looping, ...). they get
 // their own base class and their own visitor so a pass can choose to care about
@@ -136,6 +156,8 @@ class IfStmt;
 class WhileStmt;
 class BlockStmt;
 class FnDecl;
+class ExprStmt;
+class ReturnStmt;
 
 class StmtVisitor {
 public:
@@ -145,6 +167,8 @@ public:
     virtual void visit_while(WhileStmt& stmt) = 0;
     virtual void visit_block(BlockStmt& stmt) = 0;
     virtual void visit_fn(FnDecl& stmt) = 0;
+    virtual void visit_expr_stmt(ExprStmt& stmt) = 0;
+    virtual void visit_return(ReturnStmt& stmt) = 0;
 };
 
 // `let x = <expr>`. we keep the name token (so error messages can point at the
@@ -220,6 +244,34 @@ public:
     Token name_token;
     std::vector<Token> params;
     std::unique_ptr<Stmt> body;
+};
+
+// an expression on its own as a statement, like a bare `print(x)`. the value it
+// produces is thrown away — the point is whatever the expression did on the way,
+// which for now means a call's side effects or an assignment's store. without
+// this every call has to be smuggled in through a `let` binding nobody reads.
+class ExprStmt : public Stmt {
+public:
+    explicit ExprStmt(std::unique_ptr<Expr> e) : expr(std::move(e)) {}
+
+    void accept(StmtVisitor& visitor) override { visitor.visit_expr_stmt(*this); }
+
+    std::unique_ptr<Expr> expr;
+};
+
+// `return <expr>` or a bare `return`. the value is optional and comes back as
+// nil when it's left off, so `return` on its own is the same as falling off the
+// end of the body. we hang on to the keyword token because a `return` outside a
+// function is an error that needs somewhere to point.
+class ReturnStmt : public Stmt {
+public:
+    ReturnStmt(Token kw, std::unique_ptr<Expr> val)
+        : keyword(std::move(kw)), value(std::move(val)) {}
+
+    void accept(StmtVisitor& visitor) override { visitor.visit_return(*this); }
+
+    Token keyword;
+    std::unique_ptr<Expr> value; // may be null for a bare `return`
 };
 
 } // namespace brewc

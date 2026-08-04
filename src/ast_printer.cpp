@@ -54,6 +54,24 @@ void AstPrinter::visit_call(CallExpr& expr) {
     buf_ = s + ")";
 }
 
+void AstPrinter::visit_assign(AssignExpr& expr) {
+    buf_ = "(= " + expr.name + " " + child(*this, *expr.value) + ")";
+}
+
+void AstPrinter::visit_expr_stmt(ExprStmt& stmt) {
+    // no wrapper of its own — an expression statement is just the expression, and
+    // printing `(expr (call print x))` would only add noise to the snapshots.
+    buf_ = child(*this, *stmt.expr);
+}
+
+void AstPrinter::visit_return(ReturnStmt& stmt) {
+    if (!stmt.value) {
+        buf_ = "(return)";
+        return;
+    }
+    buf_ = "(return " + child(*this, *stmt.value) + ")";
+}
+
 void AstPrinter::visit_let(LetStmt& stmt) {
     buf_ = "(let " + stmt.name + " " + child(*this, *stmt.initializer) + ")";
 }

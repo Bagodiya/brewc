@@ -20,9 +20,6 @@ namespace brewc {
 // so when an expression produces a value we stash it in result_ and the caller
 // pulls it back out through evaluate(). globals_ is the outermost scope and
 // stays alive for the whole run.
-//
-// the visit_* bodies are empty stubs for now — the next handful of steps fill
-// them in one node type at a time.
 class Interpreter : public Visitor, public StmtVisitor {
 public:
     Interpreter();
@@ -35,12 +32,15 @@ public:
     void visit_binary(BinaryExpr& expr) override;
     void visit_unary(UnaryExpr& expr) override;
     void visit_call(CallExpr& expr) override;
+    void visit_assign(AssignExpr& expr) override;
 
     void visit_let(LetStmt& stmt) override;
     void visit_if(IfStmt& stmt) override;
     void visit_while(WhileStmt& stmt) override;
     void visit_block(BlockStmt& stmt) override;
     void visit_fn(FnDecl& stmt) override;
+    void visit_expr_stmt(ExprStmt& stmt) override;
+    void visit_return(ReturnStmt& stmt) override;
 
     // walk one expression and hand back whatever it evaluated to. internally it
     // runs accept() and then reads result_, which keeps the visit_* bodies from
@@ -48,11 +48,14 @@ public:
     // tests can evaluate a single expression without running a whole program.
     Value evaluate(Expr& expr);
 
-private:
     // run one statement for its effect. thin wrapper around accept() so the
-    // statement side reads the same way the expression side does.
+    // statement side reads the same way the expression side does. public for the
+    // same reason evaluate() is: the repl runs a line a statement at a time so it
+    // can print the value of a bare expression, and wrapping each one in a
+    // throwaway vector just to reach interpret() would be silly.
     void execute(Stmt& stmt);
 
+private:
     // drop the builtin functions (print, and more later) into the global scope so
     // a program can call them by name without declaring them first.
     void register_builtins();

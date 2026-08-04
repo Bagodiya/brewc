@@ -653,6 +653,10 @@ public:
         out_ = s + ")";
     }
 
+    void visit_assign(AssignExpr& expr) override {
+        out_ = "(= " + expr.name + " " + of(*expr.value) + ")";
+    }
+
     void visit_let(LetStmt& stmt) override {
         out_ = "(let " + stmt.name + " " + of(*stmt.initializer) + ")";
     }
@@ -686,6 +690,14 @@ public:
             s += stmt.params[i].lexeme;
         }
         out_ = s + ") " + of(*stmt.body) + ")";
+    }
+
+    // an expression statement adds no wrapper of its own — it's just the
+    // expression, so the snapshots stay readable.
+    void visit_expr_stmt(ExprStmt& stmt) override { out_ = of(*stmt.expr); }
+
+    void visit_return(ReturnStmt& stmt) override {
+        out_ = stmt.value ? "(return " + of(*stmt.value) + ")" : "(return)";
     }
 
 private:
@@ -761,4 +773,62 @@ TEST_CASE("snapshot: a whole program flattens statement by statement", "[parser]
     REQUIRE(shapes[0] == "(let x 1)");
     REQUIRE(shapes[1] == "(fn dbl (n) (block (let r (* n 2))))");
     REQUIRE(shapes[2] == "(while (< x 3) (block (let x (+ x 1))))");
+}
+
+TEST_CASE("snapshot: a bare expression parses as a statement", "[parser][snapshot]") {
+    REQUIRE(snapshot_stmt("print(x)") == "(call print x)");
+}
+
+TEST_CASE("snapshot: assignment parses as an expression", "[parser][snapshot]") {
+    REQUIRE(snapshot_stmt("x = 1") == "(= x 1)");
+}
+
+TEST_CASE("snapshot: assignment binds looser than any operator", "[parser][snapshot]") {
+    // the whole `1 + 2 * 3` is the value, not just the `1`.
+    REQUIRE(snapshot_stmt("x = 1 + 2 * 3") == "(= x (+ 1 (* 2 3)))");
+}
+
+TEST_CASE("snapshot: assignment groups to the right", "[parser][snapshot]") {
+    // a = (b = 1), not (a = b) = 1 — the latter isn't even a legal target.
+    REQUIRE(snapshot_stmt("a = b = 1") == "(= a (= b 1))");
+}
+
+TEST_CASE("snapshot: a comparison is not mistaken for an assignment", "[parser][snapshot]") {
+    REQUIRE(snapshot_stmt("x == 1") == "(== x 1)");
+}
+
+TEST_CASE("assigning to something that isn't a name is an error", "[parser]") {
+    REQUIRE_THROWS(parse_stmt("f() = 1"));
+    REQUIRE_THROWS(parse_stmt("1 = 2"));
+}
+
+TEST_CASE("snapshot: return with a value", "[parser][snapshot]") {
+    REQUIRE(snapshot_stmt("return 1 + 2") == "(return (+ 1 2))");
+}
+
+TEST_CASE("snapshot: a bare return has no value", "[parser][snapshot]") {
+    REQUIRE(snapshot_stmt("return") == "(return)");
+}
+
+TEST_CASE("a bare return at the end of a block doesn't eat the brace", "[parser][snapshot]") {
+    // the `}` can't start an expression, so return has to stop before it rather
+    // than trying to parse the rest of the block as its value.
+    REQUIRE(snapshot_stmt("fn f() { return }") == "(fn f () (block (return)))");
+}
+
+TEST_CASE("snapshot: a block stands on its own as a statement", "[parser][snapshot]") {
+    REQUIRE(snapshot_stmt("{ let x = 1 }") == "(block (let x 1))");
+}
+
+TEST_CASE("snapshot: a trailing semicolon is accepted and dropped", "[parser][snapshot]") {
+    REQUIRE(snapshot_stmt("let x = 1;") == "(let x 1)");
+    REQUIRE(snapshot_stmt("x = 1;") == "(= x 1)");
+    REQUIRE(snapshot_stmt("print(x);") == "(call print x)");
+}
+
+TEST_CASE("a token that can't start an expression is still reported", "[parser]") {
+    // parse_statement falls through to an expression statement now, so this is
+    // where the complaint comes from — but it still has to complain.
+    REQUIRE_THROWS(parse_stmt("}"));
+    REQUIRE_THROWS(parse_stmt(","));
 }

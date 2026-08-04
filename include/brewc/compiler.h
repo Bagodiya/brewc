@@ -68,12 +68,15 @@ public:
     void visit_binary(BinaryExpr& expr) override;
     void visit_unary(UnaryExpr& expr) override;
     void visit_call(CallExpr& expr) override;
+    void visit_assign(AssignExpr& expr) override;
 
     void visit_let(LetStmt& stmt) override;
     void visit_if(IfStmt& stmt) override;
     void visit_while(WhileStmt& stmt) override;
     void visit_block(BlockStmt& stmt) override;
     void visit_fn(FnDecl& stmt) override;
+    void visit_expr_stmt(ExprStmt& stmt) override;
+    void visit_return(ReturnStmt& stmt) override;
 
 private:
     // compile one node. thin wrappers around accept() so the visit_* bodies can

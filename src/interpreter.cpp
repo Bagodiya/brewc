@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -139,6 +140,19 @@ bool compare_numbers(TokenKind op, T a, T b) {
     }
 }
 
+// how a `return` gets from wherever it was written back out to the call that
+// started the body. it can be nested any number of blocks, ifs and loops deep, so
+// there's nothing to check on the way out — throwing unwinds all of it at once and
+// visit_call catches it at the boundary.
+//
+// this is control flow, not a failure, so it deliberately doesn't derive from
+// RuntimeError or std::exception. the catch(...) blocks that restore scopes still
+// see it and put current_ back, but nothing that reports errors can mistake it for
+// one, and a `return` can never be caught by a handler looking for a real error.
+struct ReturnSignal {
+    Value value;
+};
+
 // what counts as "true" when a value lands in an if/while condition. only nil
 // and a false bool are falsy; everything else is true, including zero and the
 // empty string. keeping the rule this small means there's nothing to memorize.
@@ -241,9 +255,6 @@ void Interpreter::fail(const std::string& message, const Token& where) {
     throw RuntimeError(message, where.line, where.column, call_stack_);
 }
 
-// the rest are still stubs for now. they get real bodies over the next few
-// steps. the casts to void just keep -Wunused-parameter quiet until then.
-
 // turn a literal token into the runtime value it stands for. the lexer already
 // did the hard part: number tokens carry the digits as their lexeme and string
 // tokens carry the text with the quotes and escapes already sorted out, so here
@@ -290,6 +301,29 @@ void Interpreter::visit_identifier(IdentifierExpr& expr) {
 // on numbers right now: two ints give an int, and anything with a float in it
 // gives a float. `+` does double duty — two strings glue together instead.
 void Interpreter::visit_binary(BinaryExpr& expr) {
+    // && and || have to be dealt with before anything else, because they don't
+    // always evaluate their right side. `false && f()` never calls f, and that's
+    // not an optimisation — it's what lets you write a guard like
+    // `n != 0 && total / n > 1` and rely on the left side to protect the right.
+    // every other operator below evaluates both sides up front, which would
+    // defeat that, so these two can't share the path.
+    if (expr.op.kind == TokenKind::AmpAmp || expr.op.kind == TokenKind::PipePipe) {
+        bool left_true = is_truthy(evaluate(*expr.left));
+
+        // once the left side settles it, the answer is already known and the
+        // right side is left alone: false wins for &&, true wins for ||.
+        if (expr.op.kind == TokenKind::AmpAmp ? !left_true : left_true) {
+            result_ = left_true;
+            return;
+        }
+
+        // the result comes back as a bool rather than as the operand itself, so
+        // `1 && 2` is true, not 2. that matches the comparisons, which always
+        // hand back a bool no matter what they were given.
+        result_ = is_truthy(evaluate(*expr.right));
+        return;
+    }
+
     Value lhs = evaluate(*expr.left);
     Value rhs = evaluate(*expr.right);
 
@@ -336,8 +370,54 @@ void Interpreter::visit_binary(BinaryExpr& expr) {
          expr.op);
 }
 
+// `-x` and `!x`. run the operand first, then apply the operator to whatever came
+// back. negation only means anything on a number, so anything else stops the run
+// rather than guessing; `!` works on every value because truthiness is defined
+// for all of them.
 void Interpreter::visit_unary(UnaryExpr& expr) {
-    (void)expr;
+    Value operand = evaluate(*expr.operand);
+
+    switch (expr.op.kind) {
+    case TokenKind::Minus:
+        if (is_int(operand)) {
+            // negating the most negative int64 has no positive twin to land on,
+            // and writing -v for that value is undefined behaviour rather than
+            // the wraparound you'd expect. going through the unsigned type makes
+            // the wrap well defined, and the result is the same everywhere else.
+            std::uint64_t bits = static_cast<std::uint64_t>(std::get<int64_t>(operand));
+            result_ = static_cast<int64_t>(0u - bits);
+            return;
+        }
+        if (is_float(operand)) {
+            result_ = -std::get<double>(operand);
+            return;
+        }
+        fail("cannot negate " + type_name(operand), expr.op);
+
+    case TokenKind::Bang:
+        // `!` always comes back as a bool, whatever went in, so it lines up with
+        // the same truthiness rule if and while use.
+        result_ = !is_truthy(operand);
+        return;
+
+    default:
+        // the parser only ever builds a UnaryExpr for those two, so this is only
+        // reachable if a new prefix operator gets added and forgotten about here.
+        fail("cannot apply '" + expr.op.lexeme + "' as a prefix operator", expr.op);
+    }
+}
+
+// `x = <expr>`. evaluate the value, then hand it to assign(), which walks outward
+// looking for a binding that already exists. a name that was never bound is an
+// error rather than a new global — inventing variables is `let`'s job, and a typo
+// in an assignment should say so instead of silently making a second variable.
+// the assigned value is also the value of the whole expression.
+void Interpreter::visit_assign(AssignExpr& expr) {
+    Value value = evaluate(*expr.value);
+    if (!current_->assign(expr.name, value)) {
+        fail("undefined variable '" + expr.name + "'", expr.token);
+    }
+    result_ = std::move(value);
 }
 
 // `foo(1, 2)`. work out what we're calling, make sure it really is a function,
@@ -345,8 +425,8 @@ void Interpreter::visit_unary(UnaryExpr& expr) {
 // into a brand new scope that hangs off the scope the function was declared in,
 // not off whoever happened to make the call. that captured scope is what lets the
 // body find the function's own name, so a function can call itself and recurse.
-// there's no return statement in the language yet, so the call just runs the body
-// for its effects and comes back as nil.
+// the call evaluates to whatever the body returned, or nil if it ran all the way
+// to the end without hitting a `return`.
 void Interpreter::visit_call(CallExpr& expr) {
     Value callee = evaluate(*expr.callee);
 
@@ -396,8 +476,17 @@ void Interpreter::visit_call(CallExpr& expr) {
     std::shared_ptr<Environment> outer = current_;
     current_ = call_scope;
     call_stack_.push_back(TraceFrame{decl->name, expr.paren.line});
+
+    // a body that runs off the end without returning gives back nil, so start
+    // there and let a ReturnSignal overwrite it if one shows up.
+    Value returned = Nil{};
     try {
         execute(*decl->body);
+    } catch (ReturnSignal& signal) {
+        // this is the boundary the throw was aimed at. catching it here is what
+        // stops it at this call instead of unwinding into the caller, so an inner
+        // function returning doesn't also return out of the one that called it.
+        returned = std::move(signal.value);
     } catch (...) {
         call_stack_.pop_back();
         current_ = outer;
@@ -406,13 +495,41 @@ void Interpreter::visit_call(CallExpr& expr) {
     call_stack_.pop_back();
     current_ = outer;
 
-    result_ = Nil{};
+    result_ = std::move(returned);
 }
 
-// `let x = expr;` runs the initializer first and then binds the result under the
-// name. an empty initializer (just `let x;`) starts the variable off as nil so a
-// later read still finds something. define() puts the name in this scope even if
-// it was already there, so writing `let` twice just replaces the old binding.
+// an expression standing on its own as a statement. run it and drop the value —
+// what we're after is whatever it did along the way, like the output from a
+// `print(x)` call or the store from an assignment. the result still lands in
+// result_, but nothing reads it before the next statement overwrites it.
+void Interpreter::visit_expr_stmt(ExprStmt& stmt) {
+    evaluate(*stmt.expr);
+}
+
+// `return <expr>`. work out the value first, then throw it at the call that's
+// waiting for it. a bare `return` has no expression and comes back as nil, same
+// as falling off the end of the body.
+//
+// the call stack being empty means nothing is waiting to catch this, so the
+// `return` is sitting at the top level of the program rather than inside a
+// function. that's a mistake worth reporting: letting it through would unwind
+// out of interpret() and end the run with no explanation.
+void Interpreter::visit_return(ReturnStmt& stmt) {
+    if (call_stack_.empty()) {
+        fail("'return' outside of a function", stmt.keyword);
+    }
+
+    Value value = Nil{};
+    if (stmt.value) {
+        value = evaluate(*stmt.value);
+    }
+    throw ReturnSignal{std::move(value)};
+}
+
+// `let x = expr` runs the initializer first and then binds the result under the
+// name. define() puts the name in this scope even if it was already there, so
+// writing `let` twice just replaces the old binding, and a `let` inside a block
+// shadows an outer name of the same spelling rather than overwriting it.
 void Interpreter::visit_let(LetStmt& stmt) {
     Value value = Nil{};
     if (stmt.initializer) {

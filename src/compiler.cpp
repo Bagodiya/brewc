@@ -253,6 +253,8 @@ void Compiler::visit_unary(UnaryExpr& expr) { (void)expr; }
 
 void Compiler::visit_call(CallExpr& expr) { (void)expr; }
 
+void Compiler::visit_assign(AssignExpr& expr) { (void)expr; }
+
 void Compiler::visit_let(LetStmt& stmt) { (void)stmt; }
 
 void Compiler::visit_if(IfStmt& stmt) { (void)stmt; }
@@ -262,5 +264,9 @@ void Compiler::visit_while(WhileStmt& stmt) { (void)stmt; }
 void Compiler::visit_block(BlockStmt& stmt) { (void)stmt; }
 
 void Compiler::visit_fn(FnDecl& stmt) { (void)stmt; }
+
+void Compiler::visit_expr_stmt(ExprStmt& stmt) { (void)stmt; }
+
+void Compiler::visit_return(ReturnStmt& stmt) { (void)stmt; }
 
 } // namespace brewc

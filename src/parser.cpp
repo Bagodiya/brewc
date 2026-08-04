@@ -155,8 +155,40 @@ std::unique_ptr<Stmt> Parser::parse_statement() {
     if (check(TokenKind::Fn)) {
         return parse_fn_decl();
     }
-    // nothing here can begin a statement, so flag the token we're stuck on.
-    throw error_at(peek(), "expected a statement");
+    if (check(TokenKind::Return)) {
+        return parse_return_stmt();
+    }
+    // a block on its own, not hanging off an if or a while. it's worth having on
+    // its own because it opens a scope, so it's how you keep a `let` from leaking
+    // into the rest of the program.
+    if (check(TokenKind::LBrace)) {
+        return parse_block();
+    }
+    // no keyword claimed it, so the only thing left it can be is an expression
+    // standing on its own. parse_expr_stmt is where "expected an expression"
+    // comes from when it isn't one either.
+    return parse_expr_stmt();
+}
+
+std::unique_ptr<Stmt> Parser::parse_return_stmt() {
+    Token keyword = advance(); // the `return` parse_statement peeked at.
+
+    // a bare `return` is allowed, so only look for a value when there's something
+    // in front of us that could start one. a `}` means we're at the end of the
+    // block and a `;` closes the statement off, and neither begins an expression.
+    std::unique_ptr<Expr> value;
+    if (!check(TokenKind::RBrace) && !check(TokenKind::Semicolon) && !is_at_end()) {
+        value = parse_expression();
+    }
+
+    match(TokenKind::Semicolon); // optional, same as everywhere else.
+    return std::make_unique<ReturnStmt>(std::move(keyword), std::move(value));
+}
+
+std::unique_ptr<Stmt> Parser::parse_expr_stmt() {
+    auto expr = parse_expression();
+    match(TokenKind::Semicolon); // semicolons are optional, eat one if it's there.
+    return std::make_unique<ExprStmt>(std::move(expr));
 }
 
 std::unique_ptr<Stmt> Parser::parse_let_stmt() {
@@ -165,6 +197,7 @@ std::unique_ptr<Stmt> Parser::parse_let_stmt() {
                                 "expected a name after 'let'");
     consume(TokenKind::Equal, "expected '=' after the name in a let");
     auto initializer = parse_expression();
+    match(TokenKind::Semicolon); // optional, so `let x = 1;` reads fine too.
     return std::make_unique<LetStmt>(name, std::move(initializer));
 }
 
@@ -227,8 +260,34 @@ std::unique_ptr<Stmt> Parser::parse_block() {
 }
 
 std::unique_ptr<Expr> Parser::parse_expression() {
-    // start at 1 so every binary operator is in play (0 means "not an operator").
-    return parse_binary(1);
+    return parse_assignment();
+}
+
+std::unique_ptr<Expr> Parser::parse_assignment() {
+    // parse the left side as an ordinary expression first. we can't tell an
+    // assignment from a plain expression by looking at the first token — `x` and
+    // `x = 1` start the same way — so we let the operators run and check for an
+    // `=` afterwards. start at 1 so every binary operator is in play (0 means
+    // "not an operator").
+    auto left = parse_binary(1);
+
+    if (check(TokenKind::Equal)) {
+        Token equals = advance();
+        // recurse rather than loop, which is what makes `a = b = 1` group to the
+        // right: the whole `b = 1` becomes the value assigned to a.
+        auto value = parse_assignment();
+
+        // only a bare name is a legal target. we already built a node for the
+        // left side, so reach into it for the token instead of re-parsing.
+        if (auto* target = dynamic_cast<IdentifierExpr*>(left.get())) {
+            return std::make_unique<AssignExpr>(target->token, std::move(value));
+        }
+        // point at the `=` rather than at the left side: the expression itself is
+        // fine, it's using it as a target that isn't.
+        throw error_at(equals, "cannot assign to this expression");
+    }
+
+    return left;
 }
 
 std::unique_ptr<Expr> Parser::parse_binary(int min_prec) {

@@ -33,6 +33,10 @@ struct RecordingVisitor : Visitor {
     void visit_call(CallExpr& expr) override {
         last = "call:" + std::to_string(expr.args.size());
     }
+
+    void visit_assign(AssignExpr& expr) override {
+        last = "assign:" + expr.name;
+    }
 };
 
 // same idea for statements, just over the StmtVisitor side of the tree.
@@ -57,6 +61,14 @@ struct RecordingStmtVisitor : StmtVisitor {
 
     void visit_fn(FnDecl& stmt) override {
         last = "fn:" + stmt.name + "/" + std::to_string(stmt.params.size());
+    }
+
+    void visit_expr_stmt(ExprStmt&) override {
+        last = "expr_stmt";
+    }
+
+    void visit_return(ReturnStmt& stmt) override {
+        last = stmt.value ? "return:value" : "return:bare";
     }
 };
 

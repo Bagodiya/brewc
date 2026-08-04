@@ -47,9 +47,9 @@ public:
     // the errors collected during the last parse_program run, in source order.
     const std::vector<ParseError>& errors() const { return errors_; }
 
-    // parse a single statement and hand back the tree for it. right now the only
-    // statement we know about is `let`, but this is the spot every other kind
-    // (if, while, fn, ...) will get hooked into as the later steps land.
+    // parse a single statement and hand back the tree for it. the keyword-led
+    // forms (let, if, while, fn, return) are picked out by their first token;
+    // anything else is treated as a bare expression statement.
     std::unique_ptr<Stmt> parse_statement();
 
     // parse a single expression and hand back the tree for it. this is the real
@@ -77,10 +77,27 @@ private:
     // body comes through parse_block so it lines up with the other blocks.
     std::unique_ptr<Stmt> parse_fn_decl();
 
+    // `return` or `return <expr>`. the value is optional, so we only reach for an
+    // expression when the next token could actually start one — otherwise a bare
+    // `return` at the end of a block would swallow the `}`.
+    std::unique_ptr<Stmt> parse_return_stmt();
+
+    // an expression on its own line. this is the fallback in parse_statement, so
+    // it's also what reports "expected a statement" when the tokens don't start
+    // anything at all.
+    std::unique_ptr<Stmt> parse_expr_stmt();
+
     // a `{ ... }` block. eats the braces and collects whatever statements sit
     // between them. shared by if/while (and later fn) so they all agree on what
     // a block looks like.
     std::unique_ptr<Stmt> parse_block();
+
+    // `x = <expr>`. sits above the binary climber because assignment binds looser
+    // than every operator, and it's right-associative so `a = b = 1` nests to the
+    // right. we parse the left side as a normal expression first and only then
+    // check for an `=`, which means we find out it was a target after the fact —
+    // that's why the result has to be an identifier to convert.
+    std::unique_ptr<Expr> parse_assignment();
 
     // precedence climbing. parse a left operand, then keep folding in binary
     // operators as long as they bind at least as tightly as min_prec. operators

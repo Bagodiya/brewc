@@ -1007,3 +1007,209 @@ TEST_CASE("clock does not go backwards between two calls", "[interp]") {
     double after = std::get<double>(interp.evaluate(*second));
     REQUIRE(after >= before);
 }
+
+// run a whole program from source and hand back everything print wrote. most of
+// the cases below are about how several statements interact, and spelling those
+// out as hand-built nodes would bury the point of the test.
+namespace {
+
+std::string run_and_capture(const std::string& source) {
+    auto program = parse_program(source);
+    Interpreter interp;
+    std::ostringstream sink;
+    std::streambuf* previous = std::cout.rdbuf(sink.rdbuf());
+    try {
+        interp.interpret(program);
+    } catch (...) {
+        std::cout.rdbuf(previous);
+        throw;
+    }
+    std::cout.rdbuf(previous);
+    return sink.str();
+}
+
+// the error message a program dies with, or "" if it ran to the end.
+std::string error_from(const std::string& source) {
+    auto program = parse_program(source);
+    Interpreter interp;
+    try {
+        interp.interpret(program);
+        return "";
+    } catch (const std::runtime_error& e) {
+        return e.what();
+    }
+}
+
+} // namespace
+
+TEST_CASE("unary minus negates an int", "[interp][unary]") {
+    REQUIRE(run_and_capture("let x = 5 print(-x)") == "-5\n");
+}
+
+TEST_CASE("unary minus negates a float", "[interp][unary]") {
+    REQUIRE(run_and_capture("print(-2.5)") == "-2.5\n");
+}
+
+TEST_CASE("a negated operand doesn't leak the other side of a binary", "[interp][unary]") {
+    // this is the one that used to be wrong. with an empty visit_unary the `-2`
+    // handed back whatever result_ still held from the left operand, so this
+    // printed 6 instead of 1.
+    REQUIRE(run_and_capture("print(3 + -2)") == "1\n");
+}
+
+TEST_CASE("double negation cancels out", "[interp][unary]") {
+    REQUIRE(run_and_capture("print(--7)") == "7\n");
+}
+
+TEST_CASE("negating the most negative int stays in range", "[interp][unary]") {
+    // there's no positive twin for it, so it wraps back to itself rather than
+    // being undefined behaviour.
+    REQUIRE(run_and_capture("print(-9223372036854775807 - 1)") == "-9223372036854775808\n");
+}
+
+TEST_CASE("negating something that isn't a number is an error", "[interp][unary]") {
+    REQUIRE(error_from("print(-\"hi\")").find("cannot negate string") != std::string::npos);
+    REQUIRE(error_from("print(-true)").find("cannot negate bool") != std::string::npos);
+}
+
+TEST_CASE("not follows the same truthiness rule as if", "[interp][unary]") {
+    // only nil and false are falsy, so !0 and !"" are both false.
+    REQUIRE(run_and_capture("print(!true) print(!false) print(!nil) print(!0) print(!\"\")") ==
+            "false\ntrue\ntrue\nfalse\nfalse\n");
+}
+
+TEST_CASE("not always comes back as a bool", "[interp][unary]") {
+    REQUIRE(run_and_capture("print(!!5)") == "true\n");
+}
+
+TEST_CASE("and is true only when both sides are", "[interp][logical]") {
+    REQUIRE(run_and_capture("print(true && true) print(true && false) print(false && true)") ==
+            "true\nfalse\nfalse\n");
+}
+
+TEST_CASE("or is true when either side is", "[interp][logical]") {
+    REQUIRE(run_and_capture("print(false || true) print(false || false) print(true || false)") ==
+            "true\nfalse\ntrue\n");
+}
+
+TEST_CASE("and short-circuits before evaluating its right side", "[interp][logical]") {
+    // the right side would divide by zero if it ran, so finishing at all is the
+    // assertion here — the false on the left has to stop it.
+    REQUIRE(run_and_capture("let n = 0 print(n != 0 && 1 / n > 0)") == "false\n");
+}
+
+TEST_CASE("or short-circuits before evaluating its right side", "[interp][logical]") {
+    REQUIRE(run_and_capture("let n = 0 print(n == 0 || 1 / n > 0)") == "true\n");
+}
+
+TEST_CASE("a short-circuited call never runs", "[interp][logical]") {
+    // mark stays unset if the right side was skipped, which is what we check.
+    REQUIRE(run_and_capture("fn mark() { print(\"ran\") return true }"
+                            "let r = false && mark()"
+                            "print(r)") == "false\n");
+}
+
+TEST_CASE("logical operators reduce to a bool, not the operand", "[interp][logical]") {
+    REQUIRE(run_and_capture("print(1 && 2) print(nil || \"x\")") == "true\ntrue\n");
+}
+
+TEST_CASE("assignment updates an existing binding", "[interp][assign]") {
+    REQUIRE(run_and_capture("let x = 1 x = 2 print(x)") == "2\n");
+}
+
+TEST_CASE("assignment evaluates to the value it stored", "[interp][assign]") {
+    REQUIRE(run_and_capture("let x = 0 print(x = 9)") == "9\n");
+}
+
+TEST_CASE("chained assignment sets both names", "[interp][assign]") {
+    REQUIRE(run_and_capture("let a = 0 let b = 0 a = b = 7 print(a) print(b)") == "7\n7\n");
+}
+
+TEST_CASE("assigning to a name that was never bound is an error", "[interp][assign]") {
+    REQUIRE(error_from("x = 1").find("undefined variable 'x'") != std::string::npos);
+}
+
+TEST_CASE("assignment reaches outward instead of making a new binding", "[interp][assign]") {
+    // the write inside the block has to land on the outer x, not shadow it.
+    REQUIRE(run_and_capture("let x = 1 { x = 2 } print(x)") == "2\n");
+}
+
+TEST_CASE("a let inside a block still shadows rather than assigns", "[interp][assign]") {
+    REQUIRE(run_and_capture("let x = 1 { let x = 2 print(x) } print(x)") == "2\n1\n");
+}
+
+TEST_CASE("a while loop can drive its own counter now", "[interp][assign]") {
+    REQUIRE(run_and_capture("let i = 0 while i < 3 { i = i + 1 } print(i)") == "3\n");
+}
+
+TEST_CASE("return hands a value back to the caller", "[interp][return]") {
+    REQUIRE(run_and_capture("fn two() { return 2 } print(two())") == "2\n");
+}
+
+TEST_CASE("a function with no return still evaluates to nil", "[interp][return]") {
+    REQUIRE(run_and_capture("fn nothing() { let x = 1 } print(nothing())") == "nil\n");
+}
+
+TEST_CASE("a bare return comes back as nil", "[interp][return]") {
+    REQUIRE(run_and_capture("fn f() { return } print(f())") == "nil\n");
+}
+
+TEST_CASE("return stops the rest of the body", "[interp][return]") {
+    REQUIRE(run_and_capture("fn f() { return 1 print(\"unreachable\") } print(f())") == "1\n");
+}
+
+TEST_CASE("return unwinds out of nested blocks and loops", "[interp][return]") {
+    REQUIRE(run_and_capture("fn find() {"
+                            "  let i = 0"
+                            "  while i < 100 {"
+                            "    if i == 3 { return i }"
+                            "    i = i + 1"
+                            "  }"
+                            "  return 0 - 1"
+                            "}"
+                            "print(find())") == "3\n");
+}
+
+TEST_CASE("return only leaves the function it was written in", "[interp][return]") {
+    // inner's return must not also return out of outer, or the second print
+    // never happens.
+    REQUIRE(run_and_capture("fn inner() { return 1 }"
+                            "fn outer() { let v = inner() print(v) return 2 }"
+                            "print(outer())") == "1\n2\n");
+}
+
+TEST_CASE("a recursive function can build its answer on the way back up",
+          "[interp][return]") {
+    REQUIRE(run_and_capture("fn fact(n) { if n <= 1 { return 1 } return n * fact(n - 1) }"
+                            "print(fact(5))") == "120\n");
+}
+
+TEST_CASE("a function can be returned and called later", "[interp][return]") {
+    // the returned tick outlives the call it was declared in and keeps writing to
+    // that call's scope, which is the closure case end to end.
+    REQUIRE(run_and_capture("fn make() { let n = 0 fn tick() { n = n + 1 return n } return tick }"
+                            "let c = make()"
+                            "print(c()) print(c())") == "1\n2\n");
+}
+
+TEST_CASE("return outside a function is reported", "[interp][return]") {
+    REQUIRE(error_from("return 1").find("'return' outside of a function") != std::string::npos);
+}
+
+TEST_CASE("an expression statement runs for its effect", "[interp]") {
+    REQUIRE(run_and_capture("print(\"bare call\")") == "bare call\n");
+}
+
+TEST_CASE("a runtime error inside a call still carries its stack trace", "[interp][return]") {
+    // the ReturnSignal shares the unwind path with real errors, so this checks
+    // the error path didn't get swallowed by the new catch.
+    auto program = parse_program("fn a() { return b() } fn b() { return 1 / 0 } let r = a()");
+    Interpreter interp;
+    try {
+        interp.interpret(program);
+        FAIL("expected a runtime error");
+    } catch (const RuntimeError& err) {
+        REQUIRE(std::string(err.what()).find("division by zero") != std::string::npos);
+        REQUIRE(err.trace().size() == 2);
+    }
+}
