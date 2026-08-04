@@ -551,3 +551,24 @@ TEST_CASE("// inside a string literal is not a comment", "[lexer]") {
     REQUIRE(t.kind == TokenKind::String);
     REQUIRE(t.lexeme == "http://example.com");
 }
+
+TEST_CASE("an error token carries a message, not the raw character", "[lexer]") {
+    // the lexeme is the one thing the parser has to go on when it reports this,
+    // so it holds the complaint rather than the character it choked on.
+    Lexer lex("@");
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::Error);
+    REQUIRE(t.lexeme == "unexpected character '@'");
+}
+
+TEST_CASE("an unterminated string says so", "[lexer]") {
+    Lexer lex("\"oops");
+    Token t = lex.next_token();
+    REQUIRE(t.kind == TokenKind::Error);
+    REQUIRE(t.lexeme == "unterminated string");
+}
+
+TEST_CASE("a lone & names the character that was wrong", "[lexer]") {
+    Lexer lex("&");
+    REQUIRE(lex.next_token().lexeme == "unexpected character '&'");
+}

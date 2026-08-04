@@ -226,9 +226,12 @@ Token Lexer::next_token() {
     }
 
     // nothing matched, hand back an error token for this char so the caller
-    // doesn't get stuck on the same position forever.
+    // doesn't get stuck on the same position forever. the lexeme carries the
+    // complaint rather than the character itself, the same way the unterminated
+    // string above does — see the note on next_token in the header.
     std::string bad(source_.substr(start, 1));
-    return Token(TokenKind::Error, std::move(bad), start_line, start_col);
+    return Token(TokenKind::Error, "unexpected character '" + bad + "'", start_line,
+                 start_col);
 }
 
 } // namespace brewc

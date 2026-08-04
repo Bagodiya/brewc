@@ -832,3 +832,43 @@ TEST_CASE("a token that can't start an expression is still reported", "[parser]"
     REQUIRE_THROWS(parse_stmt("}"));
     REQUIRE_THROWS(parse_stmt(","));
 }
+
+namespace {
+
+// parse a whole program and hand back the first error's message, or "" if it
+// parsed cleanly. the lexer-error tests below care about the text, not the tree.
+std::string first_error(const std::string& source) {
+    Parser parser(lex_all(source));
+    parser.parse_program();
+    if (parser.errors().empty()) {
+        return "";
+    }
+    return parser.errors().front().what();
+}
+
+} // namespace
+
+TEST_CASE("a lexer error is reported with the lexer's own message", "[parser]") {
+    // the parser used to swallow these and say "expected an expression", which
+    // threw away the one thing that actually explained the problem.
+    REQUIRE(first_error("let s = \"oops").find("unterminated string") != std::string::npos);
+    REQUIRE(first_error("let x = 1 @ 2").find("unexpected character '@'") != std::string::npos);
+}
+
+TEST_CASE("a lexer error is reported outside expression position too", "[parser]") {
+    // this one comes through consume() rather than parse_primary, so it proves
+    // the check sits in the shared funnel and not in one branch.
+    REQUIRE(first_error("let @ = 1").find("unexpected character '@'") != std::string::npos);
+}
+
+TEST_CASE("a lexer error keeps the position the lexer gave it", "[parser]") {
+    Parser parser(lex_all("let s = \"oops"));
+    parser.parse_program();
+    REQUIRE(!parser.errors().empty());
+    // column 9 is the opening quote, not wherever the parser gave up.
+    REQUIRE(parser.errors().front().column() == 9);
+}
+
+TEST_CASE("an ordinary syntax error still uses the parser's message", "[parser]") {
+    REQUIRE(first_error("let = 5").find("expected a name after 'let'") != std::string::npos);
+}

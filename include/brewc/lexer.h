@@ -11,11 +11,16 @@ class Lexer {
 public:
     explicit Lexer(std::string_view source);
 
-    // pull the next token off the source, skipping any whitespace in front of it.
-    // once the source runs out this keeps handing back End, so a caller can loop
-    // on it without checking the position itself. a character that can't start
-    // any token comes back as an Error token rather than throwing, which keeps
-    // the cursor moving and lets the parser report it in context.
+    // pull the next token off the source, skipping any whitespace and comments in
+    // front of it. once the source runs out this keeps handing back End, so a
+    // caller can loop on it without checking the position itself.
+    //
+    // anything the lexer can't make a token out of comes back as an Error token
+    // rather than throwing, which keeps the cursor moving so one bad character
+    // doesn't hide the rest of the file. an Error token is the one case where
+    // `lexeme` holds a message ("unterminated string") instead of the source text
+    // it was cut from — the lexer already knows what went wrong, and the parser
+    // reports that message rather than guessing from context.
     Token next_token();
 
 private:

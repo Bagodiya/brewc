@@ -65,6 +65,14 @@ const Token& Parser::consume(TokenKind kind, const std::string& message) {
 }
 
 ParseError Parser::error_at(const Token& tok, const std::string& message) const {
+    // an Error token means the lexer already gave up on this spot and worked out
+    // why. that beats anything the parser can say about it: "unterminated string"
+    // is the actual problem, while "expected an expression" is only what we
+    // happened to be looking for when we walked into it. every throw site funnels
+    // through here, so checking once covers all of them.
+    if (tok.kind == TokenKind::Error) {
+        return ParseError(tok.line, tok.column, tok.lexeme);
+    }
     return ParseError(tok.line, tok.column, message);
 }
 
