@@ -1,10 +1,16 @@
-fn fib(n, a, b) {
-    if n == 0 {
-        let _ = print(a)
-    } else {
-        let next = fib(n - 1, b, a + b)
+// iterative, so it stays fast on the tree-walker
+fn fib(n) {
+    let a = 0
+    let b = 1
+    let i = 0
+    while i < n {
+        let next = a + b
+        a = b
+        b = next
+        i = i + 1
     }
+    return a
 }
 
-let tenth = fib(10, 0, 1)
-let twentieth = fib(20, 0, 1)
+print(fib(10))
+print(fib(20))

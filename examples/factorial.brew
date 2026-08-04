@@ -1,10 +1,9 @@
-fn factorial(n, acc) {
+fn factorial(n) {
     if n <= 1 {
-        let _ = print(acc)
-    } else {
-        let next = factorial(n - 1, acc * n)
+        return 1
     }
+    return n * factorial(n - 1)
 }
 
-let small = factorial(5, 1)
-let big = factorial(10, 1)
+print(factorial(5))
+print(factorial(10))

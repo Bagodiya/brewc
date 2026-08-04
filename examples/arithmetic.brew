@@ -1,8 +1,12 @@
 let a = 20
 let b = 6
 
-let _ = print(a + b)
-let _ = print(a - b)
-let _ = print(a * b)
-let _ = print(a / b)
-let _ = print(a % b)
+print(a + b)
+print(a - b)
+print(a * b)
+print(a / b)
+print(a % b)
+
+// once a float joins in, the int is widened and the result stays a float
+print(a / 2.0)
+print(-a)

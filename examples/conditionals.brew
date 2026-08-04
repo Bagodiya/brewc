@@ -1,10 +1,21 @@
 fn describe(n) {
     if n > 0 {
-        let _ = print("positive")
+        return "positive"
     } else {
-        let _ = print("zero or less")
+        return "zero or less"
     }
 }
 
-let first = describe(7)
-let second = describe(0)
+print(describe(7))
+print(describe(0))
+
+// && and || short-circuit, so the right side is only reached when it matters
+fn safe_divide(a, b) {
+    if b != 0 && a / b > 2 {
+        return "more than double"
+    }
+    return "not more than double"
+}
+
+print(safe_divide(10, 3))
+print(safe_divide(10, 0))

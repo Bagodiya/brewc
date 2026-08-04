@@ -1,2 +1,2 @@
 let message = "hello from brew"
-let _ = print(message)
+print(message)

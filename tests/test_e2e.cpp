@@ -78,8 +78,10 @@ TEST_CASE("hello example prints its greeting", "[e2e]") {
 }
 
 TEST_CASE("arithmetic example prints one result per line", "[e2e]") {
-    // 20 with 6: sum, difference, product, truncating divide, remainder.
-    REQUIRE(run_example("arithmetic.brew") == "26\n14\n120\n3\n2\n");
+    // 20 with 6: sum, difference, product, truncating divide, remainder. then
+    // 20 / 2.0, which widens the int and keeps the .0 rather than handing back an
+    // int, and finally the unary minus.
+    REQUIRE(run_example("arithmetic.brew") == "26\n14\n120\n3\n2\n10.0\n-20\n");
 }
 
 TEST_CASE("countdown example recurses down to one", "[e2e]") {
@@ -87,18 +89,22 @@ TEST_CASE("countdown example recurses down to one", "[e2e]") {
 }
 
 TEST_CASE("conditionals example takes the branch matching its input", "[e2e]") {
-    REQUIRE(run_example("conditionals.brew") == "positive\nzero or less\n");
+    // the last two lines are the short-circuit case: with b == 0 the `&&` stops at
+    // the left operand, so the division on the right never runs and there's no
+    // divide-by-zero error to report.
+    REQUIRE(run_example("conditionals.brew") ==
+            "positive\nzero or less\nmore than double\nnot more than double\n");
 }
 
 TEST_CASE("factorial example multiplies down to the base case", "[e2e]") {
-    // 5! then 10!. the accumulator carries the product down the recursion and the
-    // base case is what prints, since a call still hands back nil.
+    // 5! then 10!. each call returns n times the one below it, so the answer comes
+    // back up the recursion rather than being printed at the bottom of it.
     REQUIRE(run_example("factorial.brew") == "120\n3628800\n");
 }
 
-TEST_CASE("fib example walks the pair down to the nth number", "[e2e]") {
-    // fib(10) and fib(20). each call shifts the pair along one place instead of
-    // branching twice, so it stays linear.
+TEST_CASE("fib example walks the pair up to the nth number", "[e2e]") {
+    // fib(10) and fib(20). the loop shifts the pair along one place per turn
+    // instead of branching twice, so it stays linear.
     REQUIRE(run_example("fib.brew") == "55\n6765\n");
 }
 
@@ -109,8 +115,9 @@ TEST_CASE("fizzbuzz example runs the usual one to fifteen", "[e2e]") {
             "1\n2\nfizz\n4\nbuzz\nfizz\n7\n8\nfizz\nbuzz\n11\nfizz\n13\n14\nfizzbuzz\n");
 }
 
-TEST_CASE("closure counter keeps each captured base separate", "[e2e]") {
-    // tick reads base out of the make_counter call it was born in, so the tens run
-    // adds onto 10 and the hundreds run adds onto 100 with no bleed between them.
-    REQUIRE(run_example("closure_counter.brew") == "11\n12\n13\n101\n102\n103\n");
+TEST_CASE("closure counter keeps each counter's state separate", "[e2e]") {
+    // make_counter returns the inner tick, which outlives the call it was declared
+    // in and keeps writing to that call's `count`. so a counts 1, 2, 3 while b,
+    // from a separate call with a separate scope, starts over at 1.
+    REQUIRE(run_example("closure_counter.brew") == "1\n2\n3\n1\n");
 }

@@ -1,12 +1,18 @@
-fn make_counter(base) {
-    fn tick(n) {
-        let _ = print(base + n)
+// each call to make_counter gets its own `count`, and the `tick` declared inside
+// keeps that scope alive after make_counter has already returned
+fn make_counter() {
+    let count = 0
+    fn tick() {
+        count = count + 1
+        return count
     }
-
-    let a = tick(1)
-    let b = tick(2)
-    let c = tick(3)
+    return tick
 }
 
-let tens = make_counter(10)
-let hundreds = make_counter(100)
+let a = make_counter()
+let b = make_counter()
+
+print(a())
+print(a())
+print(a())
+print(b())
