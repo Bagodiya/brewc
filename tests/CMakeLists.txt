@@ -14,6 +14,7 @@ add_executable(brewc_tests
     test_parser.cpp
     test_ast_printer.cpp
     test_value.cpp
+    test_value_ops.cpp
     test_environment.cpp
     test_interpreter.cpp
     test_runtime_error.cpp
@@ -27,6 +28,7 @@ add_executable(brewc_tests
     ${CMAKE_SOURCE_DIR}/src/parser.cpp
     ${CMAKE_SOURCE_DIR}/src/ast_printer.cpp
     ${CMAKE_SOURCE_DIR}/src/value.cpp
+    ${CMAKE_SOURCE_DIR}/src/value_ops.cpp
     ${CMAKE_SOURCE_DIR}/src/environment.cpp
     ${CMAKE_SOURCE_DIR}/src/runtime_error.cpp
     ${CMAKE_SOURCE_DIR}/src/source_snippet.cpp

@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "brewc/value_ops.h"
+
 namespace brewc {
 
 namespace {
@@ -44,102 +46,6 @@ Value builtin_clock(const std::vector<Value>& args) {
     return seconds;
 }
 
-// the int and float cases share the same shape, so each gets its own little
-// helper instead of one big switch that has to keep re-checking the operand
-// types. division and modulo by zero on ints would be undefined behaviour, so
-// those two are guarded; the float side just lets IEEE produce inf/nan.
-int64_t apply_int(TokenKind op, int64_t a, int64_t b) {
-    switch (op) {
-    case TokenKind::Plus:
-        return a + b;
-    case TokenKind::Minus:
-        return a - b;
-    case TokenKind::Star:
-        return a * b;
-    case TokenKind::Slash:
-        if (b == 0) {
-            throw std::runtime_error("division by zero");
-        }
-        return a / b;
-    case TokenKind::Percent:
-        if (b == 0) {
-            throw std::runtime_error("modulo by zero");
-        }
-        return a % b;
-    default:
-        throw std::runtime_error("operator is not arithmetic");
-    }
-}
-
-double apply_float(TokenKind op, double a, double b) {
-    switch (op) {
-    case TokenKind::Plus:
-        return a + b;
-    case TokenKind::Minus:
-        return a - b;
-    case TokenKind::Star:
-        return a * b;
-    case TokenKind::Slash:
-        return a / b;
-    default:
-        // there's no sensible float modulo here, and that's the only operator
-        // that falls through to this point.
-        throw std::runtime_error("operator is not valid on floats");
-    }
-}
-
-bool is_number(const Value& value) {
-    return is_int(value) || is_float(value);
-}
-
-// widen a number to a double so an int and a float have one type to meet in.
-// past 2^53 an int64 has more precision than a double does, so a very large int
-// loses its low bits on the way through. that only happens once a float is in
-// the expression and there's nothing to do about it short of a bignum, so it's
-// the same deal every other language with one float type makes.
-double to_double(const Value& value) {
-    if (is_int(value)) {
-        return static_cast<double>(std::get<int64_t>(value));
-    }
-    return std::get<double>(value);
-}
-
-bool is_comparison(TokenKind op) {
-    switch (op) {
-    case TokenKind::EqualEqual:
-    case TokenKind::BangEqual:
-    case TokenKind::Less:
-    case TokenKind::Greater:
-    case TokenKind::LessEqual:
-    case TokenKind::GreaterEqual:
-        return true;
-    default:
-        return false;
-    }
-}
-
-// all six comparisons for one number type. ints and floats both run through here
-// because the operators mean the same thing for either, only the T changes.
-template <typename T>
-bool compare_numbers(TokenKind op, T a, T b) {
-    switch (op) {
-    case TokenKind::EqualEqual:
-        return a == b;
-    case TokenKind::BangEqual:
-        return a != b;
-    case TokenKind::Less:
-        return a < b;
-    case TokenKind::Greater:
-        return a > b;
-    case TokenKind::LessEqual:
-        return a <= b;
-    case TokenKind::GreaterEqual:
-        return a >= b;
-    default:
-        throw std::runtime_error("operator is not a comparison");
-    }
-}
-
 // how a `return` gets from wherever it was written back out to the call that
 // started the body. it can be nested any number of blocks, ifs and loops deep, so
 // there's nothing to check on the way out — throwing unwinds all of it at once and
@@ -152,59 +58,6 @@ bool compare_numbers(TokenKind op, T a, T b) {
 struct ReturnSignal {
     Value value;
 };
-
-// what counts as "true" when a value lands in an if/while condition. only nil
-// and a false bool are falsy; everything else is true, including zero and the
-// empty string. keeping the rule this small means there's nothing to memorize.
-bool is_truthy(const Value& value) {
-    if (is_nil(value)) {
-        return false;
-    }
-    if (is_bool(value)) {
-        return std::get<bool>(value);
-    }
-    return true;
-}
-
-// figure out a == b for the non-number cases. only two values of the exact same
-// kind can be equal, so a bool is never equal to a string and so on. nil only
-// ever equals nil.
-bool values_equal(const Value& a, const Value& b) {
-    if (is_bool(a) && is_bool(b)) {
-        return std::get<bool>(a) == std::get<bool>(b);
-    }
-    if (is_string(a) && is_string(b)) {
-        return std::get<std::string>(a) == std::get<std::string>(b);
-    }
-    if (is_nil(a) && is_nil(b)) {
-        return true;
-    }
-    return false;
-}
-
-// run a comparison operator and hand back a bool. numbers can use any of the
-// six; everything else only gets == and !=, since ordering strings or bools
-// isn't something the language promises yet.
-bool compare(TokenKind op, const Value& lhs, const Value& rhs) {
-    // two ints compare as ints so nothing gets rounded on the way. any other pair
-    // of numbers goes through doubles, which covers float against float as well as
-    // the mixed case, so 1 < 1.5 answers instead of erroring out.
-    if (is_int(lhs) && is_int(rhs)) {
-        return compare_numbers(op, std::get<int64_t>(lhs), std::get<int64_t>(rhs));
-    }
-    if (is_number(lhs) && is_number(rhs)) {
-        return compare_numbers(op, to_double(lhs), to_double(rhs));
-    }
-
-    if (op == TokenKind::EqualEqual) {
-        return values_equal(lhs, rhs);
-    }
-    if (op == TokenKind::BangEqual) {
-        return !values_equal(lhs, rhs);
-    }
-
-    throw std::runtime_error("cannot order " + type_name(lhs) + " and " + type_name(rhs));
-}
 
 } // namespace
 

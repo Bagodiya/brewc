@@ -22,6 +22,7 @@ add_executable(brewc
     src/parser.cpp
     src/ast_printer.cpp
     src/value.cpp
+    src/value_ops.cpp
     src/environment.cpp
     src/runtime_error.cpp
     src/source_snippet.cpp
