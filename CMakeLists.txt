@@ -30,6 +30,7 @@ add_executable(brewc
     src/chunk.cpp
     src/disassembler.cpp
     src/compiler.cpp
+    src/vm.cpp
     src/repl.cpp
     src/runner.cpp
 )
