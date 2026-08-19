@@ -1,6 +1,12 @@
 #include "brewc/vm.h"
 
+#include <cstdint>
+#include <stdexcept>
+#include <string>
 #include <utility>
+#include <variant>
+
+#include "brewc/value_ops.h"
 
 namespace brewc {
 
@@ -12,6 +18,73 @@ namespace {
 const Value& nothing() {
     static const Value empty = Nil{};
     return empty;
+}
+
+// the helpers in value_ops ask for a TokenKind, because they were written for the
+// tree-walker and that always has the operator token sitting right there. all the
+// VM has is the byte it just read, so this turns one back into the other. giving
+// those helpers a second way in that took an Opcode would mean two copies of the
+// same table, which is the thing step 68 pulled them out to avoid.
+TokenKind token_for(Opcode op) {
+    switch (op) {
+    case Opcode::Add:
+        return TokenKind::Plus;
+    case Opcode::Sub:
+        return TokenKind::Minus;
+    case Opcode::Mul:
+        return TokenKind::Star;
+    case Opcode::Div:
+        return TokenKind::Slash;
+    case Opcode::Mod:
+        return TokenKind::Percent;
+    default:
+        throw std::runtime_error("opcode is not arithmetic");
+    }
+}
+
+// work out lhs <op> rhs. the checks run in the same order visit_binary runs them
+// and they have to stay that way, since the two backends are supposed to give the
+// same answer: strings first so `+` between two of them joins instead of falling
+// through to the error, then int with int so 7 / 2 stays 3, then anything else
+// numeric widened to double so 7 / 2.0 is 3.5.
+//
+// the message on the throw names the opcode rather than the operator the user
+// wrote, because by now the token is long gone. step 73 is where these get a line
+// number and reach the user at all; today the only thing that survives the throw
+// is that the run stopped.
+Value arithmetic(Opcode op, const Value& lhs, const Value& rhs) {
+    TokenKind kind = token_for(op);
+
+    if (op == Opcode::Add && is_string(lhs) && is_string(rhs)) {
+        return std::get<std::string>(lhs) + std::get<std::string>(rhs);
+    }
+
+    if (is_int(lhs) && is_int(rhs)) {
+        return apply_int(kind, std::get<int64_t>(lhs), std::get<int64_t>(rhs));
+    }
+
+    if (is_number(lhs) && is_number(rhs)) {
+        return apply_float(kind, to_double(lhs), to_double(rhs));
+    }
+
+    throw std::runtime_error("cannot apply " + opcode_name(op) + " to " + type_name(lhs) + " and " +
+                             type_name(rhs));
+}
+
+// flip the sign of one number. an int stays an int so -3 does not come back as
+// -3.0, and the detour through the unsigned type is for the one value that has no
+// positive twin: writing -v when v is the most negative int64 is undefined
+// behaviour rather than the wraparound you would expect. every other value comes
+// out the same either way. the tree-walker does the same thing in visit_unary.
+Value negate(const Value& operand) {
+    if (is_int(operand)) {
+        std::uint64_t bits = static_cast<std::uint64_t>(std::get<int64_t>(operand));
+        return static_cast<int64_t>(0u - bits);
+    }
+    if (is_float(operand)) {
+        return -std::get<double>(operand);
+    }
+    throw std::runtime_error("cannot negate " + type_name(operand));
 }
 
 } // namespace
@@ -42,6 +115,43 @@ InterpretResult VM::run(const Chunk& chunk) {
             // than crashing, so a chunk written by hand in a test can be wrong
             // without taking the process down with it.
             push(chunk.constant_at(index));
+            break;
+        }
+
+        case Opcode::Add:
+        case Opcode::Sub:
+        case Opcode::Mul:
+        case Opcode::Div:
+        case Opcode::Mod: {
+            // right comes off first because it went on last. the compiler emits
+            // the left side before the right, so by the time this instruction
+            // runs the right operand is the one on top. popping them the other
+            // way round still runs and still leaves one value behind — it just
+            // works out b - a, which is the kind of wrong that no crash points
+            // at.
+            Value rhs = pop();
+            Value lhs = pop();
+
+            try {
+                push(arithmetic(op, lhs, rhs));
+            } catch (const std::runtime_error&) {
+                // dividing by zero, or adding an int to a bool. the message is
+                // dropped for now since there is nowhere for it to go; step 73
+                // gives the VM somewhere to keep it and a line number to go with
+                // it.
+                return InterpretResult::RuntimeError;
+            }
+            break;
+        }
+
+        case Opcode::Negate: {
+            Value operand = pop();
+
+            try {
+                push(negate(operand));
+            } catch (const std::runtime_error&) {
+                return InterpretResult::RuntimeError;
+            }
             break;
         }
 

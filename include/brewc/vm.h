@@ -30,9 +30,9 @@ enum class InterpretResult {
 // emits left before right, and why every visit_* in it leaves exactly one value
 // behind — the two halves only fit together if both sides keep that promise.
 //
-// only Const and Return are implemented here. the rest of the opcodes stop the
-// run with a RuntimeError instead of falling through to something worse, and get
-// filled in one group at a time over the next steps.
+// Const, Return and the arithmetic opcodes are implemented here. the rest stop
+// the run with a RuntimeError instead of falling through to something worse, and
+// get filled in one group at a time over the next steps.
 class VM {
 public:
     VM();
@@ -65,15 +65,15 @@ private:
 
     void push(Value value);
 
-    // take the top value off. nothing calls this yet — Const only pushes and
-    // Return leaves the stack alone — but it comes in with push because the two
-    // are the same idea and splitting them across two steps would leave push
-    // looking like the whole story.
+    // take the top value off. the arithmetic opcodes pop their operands and push
+    // the answer back, which is what keeps the stack one value deeper per
+    // expression however long the expression is.
     Value pop();
 
     // look at a value without removing it. distance 0 is the top, 1 the one under
-    // it. the binary opcodes in the next step want to check both operands are
-    // numbers before committing to popping either.
+    // it. nothing needs it yet — the arithmetic opcodes pop both operands and let
+    // the value_ops helpers decide whether the pair made sense — but the jumps in
+    // step 78 have to read a condition they are not allowed to consume.
     const Value& peek(std::size_t distance) const;
 
     std::vector<Value> stack_;
