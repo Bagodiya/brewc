@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 #include <variant>
 
 #include "brewc/chunk.h"
@@ -126,13 +127,13 @@ TEST_CASE("the top of an empty stack reads as nil", "[vm]") {
 }
 
 TEST_CASE("an opcode this step does not run is an error", "[vm]") {
-    // Equal is a real instruction the compiler already emits, it just has no case
-    // in the dispatch loop until the next step. stopping is the point: carrying
-    // on would leave the stack holding two values where the compiler expects one.
+    // Pop is a real instruction with no case in the dispatch loop until step 75.
+    // stopping is the point: skipping it would leave the stack a value deeper
+    // than the compiler thinks it is and every later instruction would read the
+    // wrong slot.
     Chunk chunk;
     write_constant(chunk, int64_t{1});
-    write_constant(chunk, int64_t{2});
-    chunk.write(Opcode::Equal, 1);
+    chunk.write(Opcode::Pop, 1);
     chunk.write(Opcode::Return, 1);
 
     VM vm;
@@ -332,6 +333,181 @@ TEST_CASE("Negate flips the sign of one value", "[vm]") {
         VM vm;
         REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
     }
+}
+
+TEST_CASE("the comparison opcodes push a bool", "[vm]") {
+    // one helper for all four, since the only thing that changes between them is
+    // the byte in the middle.
+    auto compare_ints = [](int64_t a, int64_t b, Opcode op) {
+        Chunk chunk;
+        write_constant(chunk, a);
+        write_constant(chunk, b);
+        chunk.write(op, 1);
+        chunk.write(Opcode::Return, 1);
+
+        VM vm;
+        REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+        REQUIRE(vm.stack_size() == 1);
+        REQUIRE(is_bool(vm.stack_top()));
+        return std::get<bool>(vm.stack_top());
+    };
+
+    SECTION("Less and Greater") {
+        REQUIRE(compare_ints(1, 2, Opcode::Less));
+        REQUIRE_FALSE(compare_ints(2, 1, Opcode::Less));
+        REQUIRE_FALSE(compare_ints(2, 2, Opcode::Less));
+        REQUIRE(compare_ints(2, 1, Opcode::Greater));
+        REQUIRE_FALSE(compare_ints(1, 2, Opcode::Greater));
+    }
+
+    SECTION("Equal and NotEqual") {
+        REQUIRE(compare_ints(3, 3, Opcode::Equal));
+        REQUIRE_FALSE(compare_ints(3, 4, Opcode::Equal));
+        REQUIRE(compare_ints(3, 4, Opcode::NotEqual));
+        REQUIRE_FALSE(compare_ints(3, 3, Opcode::NotEqual));
+    }
+
+    SECTION("the operands do not come off backwards") {
+        // 1 < 2 popped in the wrong order is 2 < 1, and both answers are a bool,
+        // so nothing but the value itself catches this.
+        REQUIRE(compare_ints(1, 2, Opcode::Less));
+    }
+}
+
+TEST_CASE("<= and >= are a comparison plus a Not", "[vm]") {
+    // the compiler has no opcode for either one, so this is the shape it emits.
+    auto run_pair = [](int64_t a, int64_t b, Opcode op) {
+        Chunk chunk;
+        write_constant(chunk, a);
+        write_constant(chunk, b);
+        chunk.write(op, 1);
+        chunk.write(Opcode::Not, 1);
+        chunk.write(Opcode::Return, 1);
+
+        VM vm;
+        REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+        return std::get<bool>(vm.stack_top());
+    };
+
+    // a <= b is not (a > b)
+    REQUIRE(run_pair(2, 2, Opcode::Greater));
+    REQUIRE(run_pair(1, 2, Opcode::Greater));
+    REQUIRE_FALSE(run_pair(3, 2, Opcode::Greater));
+
+    // a >= b is not (a < b)
+    REQUIRE(run_pair(2, 2, Opcode::Less));
+    REQUIRE(run_pair(3, 2, Opcode::Less));
+    REQUIRE_FALSE(run_pair(1, 2, Opcode::Less));
+}
+
+TEST_CASE("comparing an int against a float widens instead of failing", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    write_constant(chunk, 1.5);
+    chunk.write(Opcode::Less, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<bool>(vm.stack_top()));
+}
+
+TEST_CASE("two ints are compared as ints", "[vm]") {
+    // both of these are the same double once they go through to_double, so if the
+    // int path were not there they would come back equal.
+    int64_t big = (int64_t{1} << 53) + 1;
+
+    Chunk chunk;
+    write_constant(chunk, big);
+    write_constant(chunk, big - 1);
+    chunk.write(Opcode::Greater, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<bool>(vm.stack_top()));
+}
+
+TEST_CASE("equality works across kinds without ordering doing the same", "[vm]") {
+    auto run_op = [](Value lhs, Value rhs, Opcode op) {
+        Chunk chunk;
+        write_constant(chunk, std::move(lhs));
+        write_constant(chunk, std::move(rhs));
+        chunk.write(op, 1);
+        chunk.write(Opcode::Return, 1);
+
+        VM vm;
+        InterpretResult result = vm.run(chunk);
+        return std::make_pair(result, vm.stack_top());
+    };
+
+    SECTION("two strings can be equal") {
+        auto [result, value] = run_op(std::string("hi"), std::string("hi"), Opcode::Equal);
+        REQUIRE(result == InterpretResult::Ok);
+        REQUIRE(std::get<bool>(value));
+    }
+
+    SECTION("different kinds are never equal") {
+        auto [result, value] = run_op(int64_t{1}, std::string("1"), Opcode::Equal);
+        REQUIRE(result == InterpretResult::Ok);
+        REQUIRE_FALSE(std::get<bool>(value));
+    }
+
+    SECTION("bools compare by their value") {
+        auto [result, value] = run_op(true, false, Opcode::NotEqual);
+        REQUIRE(result == InterpretResult::Ok);
+        REQUIRE(std::get<bool>(value));
+    }
+
+    SECTION("ordering two strings stops the run") {
+        auto [result, value] = run_op(std::string("a"), std::string("b"), Opcode::Less);
+        (void)value;
+        REQUIRE(result == InterpretResult::RuntimeError);
+    }
+
+    SECTION("ordering a bool against a number stops the run") {
+        auto [result, value] = run_op(true, int64_t{1}, Opcode::Greater);
+        (void)value;
+        REQUIRE(result == InterpretResult::RuntimeError);
+    }
+}
+
+TEST_CASE("Not follows the same truthiness as the tree-walker", "[vm]") {
+    auto negated = [](Value value) {
+        Chunk chunk;
+        write_constant(chunk, std::move(value));
+        chunk.write(Opcode::Not, 1);
+        chunk.write(Opcode::Return, 1);
+
+        VM vm;
+        REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+        REQUIRE(vm.stack_size() == 1);
+        REQUIRE(is_bool(vm.stack_top()));
+        return std::get<bool>(vm.stack_top());
+    };
+
+    // only nil and false are falsy, so everything else here inverts to false —
+    // zero and the empty string included.
+    REQUIRE(negated(Nil{}));
+    REQUIRE(negated(false));
+    REQUIRE_FALSE(negated(true));
+    REQUIRE_FALSE(negated(int64_t{0}));
+    REQUIRE_FALSE(negated(int64_t{7}));
+    REQUIRE_FALSE(negated(0.0));
+    REQUIRE_FALSE(negated(std::string("")));
+}
+
+TEST_CASE("two Nots cancel out", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{5});
+    chunk.write(Opcode::Not, 1);
+    chunk.write(Opcode::Not, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<bool>(vm.stack_top()));
 }
 
 TEST_CASE("a nested expression leaves one value behind", "[vm]") {

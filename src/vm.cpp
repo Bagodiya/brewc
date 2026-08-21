@@ -25,6 +25,11 @@ const Value& nothing() {
 // VM has is the byte it just read, so this turns one back into the other. giving
 // those helpers a second way in that took an Opcode would mean two copies of the
 // same table, which is the thing step 68 pulled them out to avoid.
+//
+// only the opcodes that stand for an operator the user can write are in here.
+// there is no LessEqual or GreaterEqual case because there are no such opcodes:
+// the compiler turns `a <= b` into Greater followed by Not, so what reaches this
+// switch is always one of the four below.
 TokenKind token_for(Opcode op) {
     switch (op) {
     case Opcode::Add:
@@ -37,8 +42,16 @@ TokenKind token_for(Opcode op) {
         return TokenKind::Slash;
     case Opcode::Mod:
         return TokenKind::Percent;
+    case Opcode::Equal:
+        return TokenKind::EqualEqual;
+    case Opcode::NotEqual:
+        return TokenKind::BangEqual;
+    case Opcode::Less:
+        return TokenKind::Less;
+    case Opcode::Greater:
+        return TokenKind::Greater;
     default:
-        throw std::runtime_error("opcode is not arithmetic");
+        throw std::runtime_error("opcode has no operator");
     }
 }
 
@@ -85,6 +98,16 @@ Value negate(const Value& operand) {
         return -std::get<double>(operand);
     }
     throw std::runtime_error("cannot negate " + type_name(operand));
+}
+
+// work out lhs <op> rhs for the four comparison opcodes. compare() already knows
+// the rules: two ints are compared as ints so nothing is rounded on the way, a
+// mixed pair widens to double so 1 < 1.5 answers instead of erroring, and == and
+// != work on any pair while ordering only works on numbers. leaving all of that
+// where it is means the VM says the same thing about `"a" < "b"` as the
+// tree-walker does, which is the whole reason step 68 happened.
+bool comparison(Opcode op, const Value& lhs, const Value& rhs) {
+    return compare(token_for(op), lhs, rhs);
 }
 
 } // namespace
@@ -141,6 +164,40 @@ InterpretResult VM::run(const Chunk& chunk) {
                 // it.
                 return InterpretResult::RuntimeError;
             }
+            break;
+        }
+
+        case Opcode::Equal:
+        case Opcode::NotEqual:
+        case Opcode::Less:
+        case Opcode::Greater: {
+            // same pop order as the arithmetic opcodes, and it matters more here:
+            // `a - b` at least looks wrong when it comes out backwards, but `a < b`
+            // answered as `b < a` is still a bool and still plausible.
+            Value rhs = pop();
+            Value lhs = pop();
+
+            try {
+                push(comparison(op, lhs, rhs));
+            } catch (const std::runtime_error&) {
+                // ordering two strings, or a bool against a number. equality never
+                // gets here — any two values can be compared for that, they are
+                // just not equal when their kinds differ.
+                return InterpretResult::RuntimeError;
+            }
+            break;
+        }
+
+        case Opcode::Not: {
+            // the same truthiness the tree-walker uses, so only nil and false are
+            // falsy and `!0` is false rather than true. this cannot fail, which is
+            // why there is nothing to catch: every value is either truthy or it is
+            // not.
+            //
+            // it also runs on its own after a Greater or a Less, since that is how
+            // <= and >= are built, and inverting a bool is the same operation as
+            // inverting anything else.
+            push(!is_truthy(pop()));
             break;
         }
 
