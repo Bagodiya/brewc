@@ -347,6 +347,77 @@ TEST_CASE("both instructions of a negated comparison get the operator's line", "
     REQUIRE(chunk.line_at(5) == 1);
 }
 
+TEST_CASE("a unary minus is the operand followed by Negate", "[compiler]") {
+    Chunk chunk = compile_expr_source("-7");
+    REQUIRE(chunk.size() == 4);
+    REQUIRE(op_at(chunk, 0) == Opcode::Const);
+    REQUIRE(op_at(chunk, 2) == Opcode::Negate);
+    REQUIRE(op_at(chunk, 3) == Opcode::Return);
+}
+
+TEST_CASE("the operand is compiled before the Negate, not folded into it", "[compiler]") {
+    // 7 goes into the pool as a positive 7 and the sign is done at runtime. the
+    // lexer never scanned a minus into the literal, so a -7 in the constants here
+    // would mean something decided to fold on its own.
+    Chunk chunk = compile_expr_source("-7");
+    REQUIRE(std::get<int64_t>(chunk.constants[chunk.code[1]]) == 7);
+}
+
+TEST_CASE("a unary bang is the operand followed by Not", "[compiler]") {
+    Chunk chunk = compile_expr_source("!true");
+    REQUIRE(chunk.size() == 3);
+    REQUIRE(op_at(chunk, 0) == Opcode::True);
+    REQUIRE(op_at(chunk, 1) == Opcode::Not);
+}
+
+TEST_CASE("stacked unary operators nest instead of cancelling", "[compiler]") {
+    // the parser builds one node inside another, so both come out. dropping the
+    // pair is the peephole pass's job later, and doing it here would be folding
+    // before there is anything that checks the fold is right.
+    Chunk chunk = compile_expr_source("--7");
+    REQUIRE(chunk.size() == 5);
+    REQUIRE(op_at(chunk, 2) == Opcode::Negate);
+    REQUIRE(op_at(chunk, 3) == Opcode::Negate);
+
+    Chunk bangs = compile_expr_source("!!true");
+    REQUIRE(op_at(bangs, 1) == Opcode::Not);
+    REQUIRE(op_at(bangs, 2) == Opcode::Not);
+}
+
+TEST_CASE("unary binds tighter than a binary operator", "[compiler]") {
+    // -2 + 3 is (-2) + 3, so the Negate has to land before the right operand is
+    // pushed. if it came out after the Add it would negate the sum instead.
+    Chunk chunk = compile_expr_source("-2 + 3");
+    REQUIRE(op_at(chunk, 2) == Opcode::Negate);
+    REQUIRE(op_at(chunk, 3) == Opcode::Const);
+    REQUIRE(op_at(chunk, 5) == Opcode::Add);
+}
+
+TEST_CASE("a unary applies to a grouped expression as one operand", "[compiler]") {
+    // -(2 + 3) has the whole Add underneath it, so the Negate is last and sees
+    // the one value the group left behind.
+    Chunk chunk = compile_expr_source("-(2 + 3)");
+    REQUIRE(op_at(chunk, 4) == Opcode::Add);
+    REQUIRE(op_at(chunk, 5) == Opcode::Negate);
+}
+
+TEST_CASE("the Negate takes the operator's line and not the operand's", "[compiler]") {
+    // the operand pushed line_ on to line 2 on its way past, which is the same
+    // trap the binary operators have.
+    Chunk chunk = compile_expr_source("-\n7");
+    REQUIRE(chunk.line_at(2) == 1);
+}
+
+TEST_CASE("a prefix operator with no meaning is reported", "[compiler]") {
+    // the parser only builds a UnaryExpr for - and !, so this one has to be put
+    // together by hand. it stands in for someone adding a prefix operator later
+    // and forgetting the compiler side.
+    Compiler compiler;
+    UnaryExpr expr(Token(TokenKind::Star, "*", 1, 1),
+                   std::make_unique<LiteralExpr>(Token(TokenKind::Integer, "1", 1, 2)));
+    REQUIRE_THROWS_AS(compiler.compile_expression(expr), CompileError);
+}
+
 TEST_CASE("an operator with no opcode yet is reported, not skipped", "[compiler]") {
     // && and || can't be a plain instruction — they short-circuit, which needs a
     // jump over the right operand, and jumps aren't in yet. until then they have

@@ -243,13 +243,48 @@ void Compiler::visit_binary(BinaryExpr& expr) {
     }
 }
 
+// `-x` and `!done` are the binary case with one child instead of two: compile the
+// operand, then one instruction that pops it and pushes the result. so the same
+// one-value-on-the-stack rule holds here too, and a unary can sit anywhere an
+// operand can without the code around it caring.
+//
+// Not is the same instruction `<=` and `>=` already emit after their compare, so
+// `!` needs nothing new — both uses want the shared truthiness rule and both give
+// back a bool.
+//
+// the parser nests these rather than counting them, so `--7` is a UnaryExpr
+// holding another one, and recursing gives Const 7, Negate, Negate. two negates
+// that cancel out is a wasted instruction, but folding them away is the peephole
+// pass in Phase 6, not something to guess at here.
+void Compiler::visit_unary(UnaryExpr& expr) {
+    Opcode op;
+    switch (expr.op.kind) {
+    case TokenKind::Minus:
+        op = Opcode::Negate;
+        break;
+    case TokenKind::Bang:
+        op = Opcode::Not;
+        break;
+    default:
+        // only Minus and Bang ever build a UnaryExpr, so getting here means a new
+        // prefix operator was added to the parser and not to this switch.
+        fail("operator '" + expr.op.lexeme + "' cannot be used as a prefix operator", expr.op);
+    }
+
+    compile_expr(*expr.operand);
+
+    // the operand left line_ wherever it ended, same as in visit_binary. put the
+    // operator's line back before emitting, or negating something that spans two
+    // lines blames the wrong one.
+    set_line(expr.op);
+    emit(op);
+}
+
 // everything below is a stub until the step that fills it in. the parameters are
 // cast to void so -Wunused-parameter stays quiet without the names disappearing
 // from the signatures, which would make the diffs in those steps harder to read.
 
 void Compiler::visit_identifier(IdentifierExpr& expr) { (void)expr; }
-
-void Compiler::visit_unary(UnaryExpr& expr) { (void)expr; }
 
 void Compiler::visit_call(CallExpr& expr) { (void)expr; }
 
