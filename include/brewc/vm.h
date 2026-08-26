@@ -3,17 +3,20 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "brewc/chunk.h"
+#include "brewc/runtime_error.h"
 #include "brewc/value.h"
 
 namespace brewc {
 
-// how a run ended. there is no third case yet — the VM either walked the chunk to
-// its Return or it hit something it could not do. once step 73 gives errors a
-// message and a position, that message hangs off the VM and this stays a plain
-// yes/no answer, the same way the parser keeps its errors in a vector instead of
+// how a run ended. the VM either walked the chunk to its Return or it hit
+// something it could not do. the message and the line that go with the second
+// case hang off the VM and are read back with error(), so this stays a plain
+// yes/no answer — the same way the parser keeps its errors in a vector instead of
 // stuffing them into the return type.
 enum class InterpretResult {
     Ok,
@@ -57,7 +60,25 @@ public:
     // when the top of the stack looks right.
     std::size_t stack_size() const;
 
+    // what went wrong in the last run, or null if it went fine. the caller prints
+    // it with format_error() the same way it prints one out of the tree-walker —
+    // a user has no idea which backend ran their program and should not be able
+    // to tell from the error.
+    //
+    // this is only meaningful right after run() returns. a second run clears it
+    // before it starts, so a failed run followed by a good one reads as good.
+    const RuntimeError* error() const;
+
 private:
+    // stop the run, remember why, and say so. the offending instruction is the
+    // byte before ip_, since ip_ has already stepped past whatever was read, and
+    // the chunk's parallel lines array turns that offset into a source line.
+    //
+    // hands back RuntimeError so the dispatch loop can `return fail(...)` on one
+    // line instead of setting the error and then returning the same thing at
+    // every site.
+    InterpretResult fail(const std::string& message, const Chunk& chunk);
+
     // the next byte in the stream, stepping ip past it. operands are read the
     // same way the opcodes are, since the two are packed together with nothing
     // marking where one ends.
@@ -85,6 +106,11 @@ private:
     // work in offsets anyway, so a pointer would have to be converted back at
     // every one of them.
     std::size_t ip_ = 0;
+
+    // set by fail(), cleared at the top of every run. empty is the normal state,
+    // which is why error() can answer with a pointer instead of the caller having
+    // to ask whether there is one first.
+    std::optional<RuntimeError> error_;
 };
 
 } // namespace brewc

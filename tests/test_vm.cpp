@@ -9,6 +9,7 @@
 #include <variant>
 
 #include "brewc/chunk.h"
+#include "brewc/runtime_error.h"
 #include "brewc/value.h"
 #include "brewc/vm.h"
 
@@ -571,4 +572,191 @@ TEST_CASE("the same chunk can be run more than once", "[vm]") {
     REQUIRE(vm.run(chunk) == InterpretResult::Ok);
     REQUIRE(vm.stack_size() == 1);
     REQUIRE(std::get<int64_t>(vm.stack_top()) == 5);
+}
+
+TEST_CASE("a failed run leaves an error behind with the line on it", "[vm]") {
+    // the Div is written as line 3, so that is the line the report has to name.
+    // the two constants are on line 3 as well — anything else and a lookup that
+    // was off by a byte would still read as line 3 and the test would pass
+    // without checking anything.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1}, 3);
+    write_constant(chunk, int64_t{0}, 3);
+    chunk.write(Opcode::Div, 3);
+    chunk.write(Opcode::Return, 3);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+
+    const RuntimeError* err = vm.error();
+    REQUIRE(err != nullptr);
+    REQUIRE(std::string(err->what()) == "division by zero");
+    REQUIRE(err->line() == 3);
+}
+
+TEST_CASE("the error names the line of the instruction that failed", "[vm]") {
+    // one line per instruction, so a lookup that lands on the neighbouring byte
+    // comes back with a different number instead of the same one.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1}, 10);
+    write_constant(chunk, std::string("two"), 11);
+    chunk.write(Opcode::Add, 12);
+    chunk.write(Opcode::Return, 13);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(vm.error()->line() == 12);
+}
+
+TEST_CASE("a run that goes fine leaves no error", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{7});
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.error() == nullptr);
+}
+
+TEST_CASE("a good run clears the error the last one left", "[vm]") {
+    // the repl reuses one VM for the whole session. a line that works after a
+    // line that did not has to read as working.
+    Chunk bad;
+    write_constant(bad, int64_t{1}, 1);
+    write_constant(bad, int64_t{0}, 1);
+    bad.write(Opcode::Div, 1);
+
+    Chunk good;
+    write_constant(good, int64_t{4}, 1);
+    good.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(bad) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+
+    REQUIRE(vm.run(good) == InterpretResult::Ok);
+    REQUIRE(vm.error() == nullptr);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 4);
+}
+
+TEST_CASE("the stack is empty after a failed run", "[vm]") {
+    // the Add pops both of its operands before it throws, but the 1 pushed ahead
+    // of the pair is still there when it does. whatever a run leaves half done is
+    // the next run's problem unless it gets cleaned up here.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1}, 1);
+    write_constant(chunk, int64_t{2}, 1);
+    write_constant(chunk, std::string("three"), 1);
+    chunk.write(Opcode::Add, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("the VM says the same thing about a bad pair as the tree-walker", "[vm]") {
+    // the message quotes the operator the user wrote and not the name of the
+    // opcode, so `1 + "two"` reads the same whichever backend ran it.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1}, 1);
+    write_constant(chunk, std::string("two"), 1);
+    chunk.write(Opcode::Add, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(std::string(vm.error()->what()) == "cannot apply '+' to int and string");
+}
+
+TEST_CASE("ordering two strings reports what could not be ordered", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, std::string("a"), 2);
+    write_constant(chunk, std::string("b"), 2);
+    chunk.write(Opcode::Less, 2);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(std::string(vm.error()->what()) == "cannot order string and string");
+    REQUIRE(vm.error()->line() == 2);
+}
+
+TEST_CASE("negating something that is not a number reports it", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, std::string("x"), 5);
+    chunk.write(Opcode::Negate, 6);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(std::string(vm.error()->what()) == "cannot negate string");
+    REQUIRE(vm.error()->line() == 6);
+}
+
+TEST_CASE("an opcode with no case yet says which one it was", "[vm]") {
+    // Pop has no case until step 75. the message is about the VM and not about
+    // the program, but a stop with nothing to say is worse to run into.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1}, 4);
+    chunk.write(Opcode::Pop, 4);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(std::string(vm.error()->what()) == "Pop is not implemented yet");
+    REQUIRE(vm.error()->line() == 4);
+}
+
+TEST_CASE("a VM error prints the same way an interpreter error does", "[vm]") {
+    // format_error is what the driver calls on either backend, so it has to take
+    // one of these without any special casing.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1}, 2);
+    write_constant(chunk, int64_t{0}, 2);
+    chunk.write(Opcode::Div, 2);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+
+    std::string report = format_error(*vm.error());
+    REQUIRE(report == "runtime error: division by zero (line 2)");
+}
+
+TEST_CASE("the report leaves the column out when the VM does not know it", "[vm]") {
+    // a chunk carries a line per byte and no column, so there is nothing to point
+    // a caret at. the line on its own is still worth printing; a column of 1 that
+    // was never measured would just be a lie that happens to look precise.
+    std::string source = "let x = 1;\nlet y = x / 0;\n";
+
+    Chunk chunk;
+    write_constant(chunk, int64_t{1}, 2);
+    write_constant(chunk, int64_t{0}, 2);
+    chunk.write(Opcode::Div, 2);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(vm.error()->column() == 0);
+
+    // the source overload falls back to the plain report when the position is not
+    // precise enough to place a caret on it.
+    REQUIRE(format_error(*vm.error(), source) == format_error(*vm.error()));
+}
+
+TEST_CASE("nothing is on the stack trace yet", "[vm]") {
+    // step 82 is what gives the VM call frames to walk. an empty trace prints as
+    // no stack section at all, which is the right answer for a program that only
+    // ever ran at the top level.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1}, 1);
+    write_constant(chunk, int64_t{0}, 1);
+    chunk.write(Opcode::Mod, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(vm.error()->trace().empty());
 }

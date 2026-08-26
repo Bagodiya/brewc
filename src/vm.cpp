@@ -55,16 +55,46 @@ TokenKind token_for(Opcode op) {
     }
 }
 
+// how the operator behind an opcode was spelled in the source. the tree-walker
+// drops expr.op.lexeme straight into its messages and there is no token left here
+// to read one off, so the same handful of strings sit in this table instead.
+// naming the opcode would have been less work, but then "cannot apply Div" out of
+// the VM and "cannot apply '/'" out of the interpreter describe the same mistake
+// two different ways, and a user has no idea which backend ran their program.
+std::string operator_text(Opcode op) {
+    switch (op) {
+    case Opcode::Add:
+        return "+";
+    case Opcode::Sub:
+        return "-";
+    case Opcode::Mul:
+        return "*";
+    case Opcode::Div:
+        return "/";
+    case Opcode::Mod:
+        return "%";
+    case Opcode::Equal:
+        return "==";
+    case Opcode::NotEqual:
+        return "!=";
+    case Opcode::Less:
+        return "<";
+    case Opcode::Greater:
+        return ">";
+    default:
+        return opcode_name(op);
+    }
+}
+
 // work out lhs <op> rhs. the checks run in the same order visit_binary runs them
 // and they have to stay that way, since the two backends are supposed to give the
 // same answer: strings first so `+` between two of them joins instead of falling
 // through to the error, then int with int so 7 / 2 stays 3, then anything else
 // numeric widened to double so 7 / 2.0 is 3.5.
 //
-// the message on the throw names the opcode rather than the operator the user
-// wrote, because by now the token is long gone. step 73 is where these get a line
-// number and reach the user at all; today the only thing that survives the throw
-// is that the run stopped.
+// the throw carries a message and nothing else. it is the dispatch loop that
+// knows which byte it was running, so that is where the line gets stamped on,
+// which is the same split visit_binary uses in the tree-walker.
 Value arithmetic(Opcode op, const Value& lhs, const Value& rhs) {
     TokenKind kind = token_for(op);
 
@@ -80,8 +110,8 @@ Value arithmetic(Opcode op, const Value& lhs, const Value& rhs) {
         return apply_float(kind, to_double(lhs), to_double(rhs));
     }
 
-    throw std::runtime_error("cannot apply " + opcode_name(op) + " to " + type_name(lhs) + " and " +
-                             type_name(rhs));
+    throw std::runtime_error("cannot apply '" + operator_text(op) + "' to " + type_name(lhs) +
+                             " and " + type_name(rhs));
 }
 
 // flip the sign of one number. an int stays an int so -3 does not come back as
@@ -124,6 +154,10 @@ InterpretResult VM::run(const Chunk& chunk) {
     stack_.clear();
     ip_ = 0;
 
+    // a run that goes fine has to leave error() empty, or the last failure would
+    // still be sitting there for the caller to find and report a second time.
+    error_.reset();
+
     // an empty chunk has no Return to stop at, so the loop condition has to be
     // the one that ends the run. that also covers a chunk whose last instruction
     // was truncated mid-operand: read_byte walks ip past the end and the next
@@ -157,12 +191,11 @@ InterpretResult VM::run(const Chunk& chunk) {
 
             try {
                 push(arithmetic(op, lhs, rhs));
-            } catch (const std::runtime_error&) {
-                // dividing by zero, or adding an int to a bool. the message is
-                // dropped for now since there is nowhere for it to go; step 73
-                // gives the VM somewhere to keep it and a line number to go with
-                // it.
-                return InterpretResult::RuntimeError;
+            } catch (const std::runtime_error& e) {
+                // dividing by zero, or adding an int to a bool. the helper wrote
+                // the message and fail() adds the line it happened on, since the
+                // helper has no idea where in the program it was called from.
+                return fail(e.what(), chunk);
             }
             break;
         }
@@ -179,11 +212,11 @@ InterpretResult VM::run(const Chunk& chunk) {
 
             try {
                 push(comparison(op, lhs, rhs));
-            } catch (const std::runtime_error&) {
+            } catch (const std::runtime_error& e) {
                 // ordering two strings, or a bool against a number. equality never
                 // gets here — any two values can be compared for that, they are
                 // just not equal when their kinds differ.
-                return InterpretResult::RuntimeError;
+                return fail(e.what(), chunk);
             }
             break;
         }
@@ -206,8 +239,8 @@ InterpretResult VM::run(const Chunk& chunk) {
 
             try {
                 push(negate(operand));
-            } catch (const std::runtime_error&) {
-                return InterpretResult::RuntimeError;
+            } catch (const std::runtime_error& e) {
+                return fail(e.what(), chunk);
             }
             break;
         }
@@ -226,7 +259,12 @@ InterpretResult VM::run(const Chunk& chunk) {
             // would carry on with a stack that no longer matches what the
             // compiler thinks is on it and produce a wrong number instead of a
             // failure.
-            return InterpretResult::RuntimeError;
+            //
+            // this one is a hole in the VM and not a mistake in the program, so
+            // it reads as such. no user should ever see it once the phase is
+            // finished, but until then a wrong-looking message beats a silent
+            // stop with nothing to say.
+            return fail(opcode_name(op) + " is not implemented yet", chunk);
         }
     }
 
@@ -234,6 +272,33 @@ InterpretResult VM::run(const Chunk& chunk) {
     // means either an empty chunk or a hand-built one, and neither is worth
     // calling an error.
     return InterpretResult::Ok;
+}
+
+const RuntimeError* VM::error() const { return error_ ? &*error_ : nullptr; }
+
+InterpretResult VM::fail(const std::string& message, const Chunk& chunk) {
+    // ip_ has already moved past whatever read_byte handed back, so the byte
+    // before it is the instruction that went wrong. the one exception is a chunk
+    // so short it failed before reading anything, and offset 0 is as good an
+    // answer as there is for that.
+    std::size_t offset = (ip_ > 0) ? ip_ - 1 : 0;
+
+    // column 0, because the chunk keeps one source line per byte and nothing
+    // finer than that. format_error leaves the column out of the report when it
+    // is 0 rather than printing a made-up one, so the reader is told the line and
+    // no more than the VM actually knows.
+    //
+    // the trace is empty for the same reason: there is only ever the top level to
+    // be in until step 82 gives the VM call frames, and an empty one already
+    // prints as no stack section at all.
+    error_ = RuntimeError(message, chunk.line_at(offset), 0, {});
+
+    // drop whatever the half-finished expression had pushed. the repl keeps one
+    // VM for the whole session, so leaving it there would put the next line's
+    // operands on top of junk and quietly give it the wrong operands to work
+    // with.
+    stack_.clear();
+    return InterpretResult::RuntimeError;
 }
 
 const Value& VM::stack_top() const {
