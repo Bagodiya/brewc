@@ -162,6 +162,15 @@ void Compiler::emit_constant(Value value, const Token& where) {
     emit(Opcode::Const, static_cast<uint8_t>(index));
 }
 
+uint8_t Compiler::name_constant(const std::string& name, const Token& where) {
+    std::size_t index = chunk_.add_constant(name);
+    if (index >= Chunk::max_constants) {
+        fail("too many constants in one chunk (max " + std::to_string(Chunk::max_constants) + ")",
+             where);
+    }
+    return static_cast<uint8_t>(index);
+}
+
 void Compiler::fail(const std::string& message, const Token& where) {
     throw CompileError(where.line, where.column, message);
 }
@@ -280,17 +289,55 @@ void Compiler::visit_unary(UnaryExpr& expr) {
     emit(op);
 }
 
+// reading a variable back out. the name goes in the constant pool and GetGlobal
+// carries its index, so the VM does the lookup at run time instead of the
+// compiler resolving it now.
+//
+// that sounds backwards for something called a compiler, but a global can be
+// defined after the code that reads it was already compiled — a function body
+// mentioning `print` is compiled before anything has bound `print` — and a name
+// is the only handle both halves can agree on before the program runs. locals
+// are the case where the compiler really does know the answer up front, and step
+// 76 resolves those to a stack slot; until then every identifier is a global.
+void Compiler::visit_identifier(IdentifierExpr& expr) {
+    set_line(expr.token);
+    emit(Opcode::GetGlobal, name_constant(expr.name, expr.token));
+}
+
+// `let x = expr` compiles the initializer first, so the value it wants to bind is
+// sitting on top when DefineGlobal runs, and then names it. the order is forced:
+// the instruction takes the value off the stack, so nothing can be bound before
+// the code that produces it has run.
+//
+// DefineGlobal pops. a statement has to leave the stack the way it found it, and
+// the initializer put exactly one value there, so exactly one comes off.
+//
+// a `let` with nothing after the name binds nil. the grammar does not allow that
+// today, but the tree-walker's visit_let already checks for it and the two
+// backends are supposed to behave the same, so the check is here too rather than
+// waiting for the grammar to catch up.
+void Compiler::visit_let(LetStmt& stmt) {
+    if (stmt.initializer) {
+        compile_expr(*stmt.initializer);
+    } else {
+        set_line(stmt.name_token);
+        emit(Opcode::Nil);
+    }
+
+    // the initializer left line_ wherever its last node was, same trap as in
+    // visit_binary. put the name's line back so an error on the bind points at
+    // the `let` and not at the tail of a long expression.
+    set_line(stmt.name_token);
+    emit(Opcode::DefineGlobal, name_constant(stmt.name, stmt.name_token));
+}
+
 // everything below is a stub until the step that fills it in. the parameters are
 // cast to void so -Wunused-parameter stays quiet without the names disappearing
 // from the signatures, which would make the diffs in those steps harder to read.
 
-void Compiler::visit_identifier(IdentifierExpr& expr) { (void)expr; }
-
 void Compiler::visit_call(CallExpr& expr) { (void)expr; }
 
 void Compiler::visit_assign(AssignExpr& expr) { (void)expr; }
-
-void Compiler::visit_let(LetStmt& stmt) { (void)stmt; }
 
 void Compiler::visit_if(IfStmt& stmt) { (void)stmt; }
 

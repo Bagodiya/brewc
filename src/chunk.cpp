@@ -45,6 +45,9 @@ std::string opcode_name(Opcode op) {
     case Opcode::Less: return "Less";
     case Opcode::Greater: return "Greater";
     case Opcode::Not: return "Not";
+    case Opcode::DefineGlobal: return "DefineGlobal";
+    case Opcode::GetGlobal: return "GetGlobal";
+    case Opcode::SetGlobal: return "SetGlobal";
     case Opcode::GetLocal: return "GetLocal";
     case Opcode::SetLocal: return "SetLocal";
     case Opcode::Pop: return "Pop";

@@ -49,6 +49,19 @@ enum class Opcode : uint8_t {
     Greater,
     Not,
 
+    // globals are looked up by name, so all three of these take a one-byte index
+    // into the constant pool where the name is kept as a string. that is a hash
+    // lookup every time the variable is touched, which is slower than a slot
+    // would be, but a global can be defined after the code that reads it was
+    // already compiled and a name is the only thing both sides agree on.
+    //
+    // DefineGlobal pops the value it binds, since `let` is a statement and has to
+    // leave the stack the way it found it. SetGlobal leaves it, since assignment
+    // is an expression and `a = b = 7` needs the value to still be there.
+    DefineGlobal,
+    GetGlobal,
+    SetGlobal,
+
     // locals live in a slot on the VM stack, and both of these take that slot
     // number as a one-byte operand.
     GetLocal,

@@ -245,6 +245,64 @@ InterpretResult VM::run(const Chunk& chunk) {
             break;
         }
 
+        case Opcode::DefineGlobal: {
+            std::size_t index = read_byte(chunk);
+            const Value& name = chunk.constant_at(index);
+            if (!is_string(name)) {
+                // the compiler always puts a string there, so this is a chunk
+                // that was built by hand or one whose operand byte went astray.
+                // saying so beats binding a global called "42".
+                return fail("global name operand is not a string", chunk);
+            }
+
+            // define and not insert. writing `let x` twice replaces the old
+            // binding rather than being an error, which is what Environment's
+            // define() does and therefore what the tree-walker already allows.
+            globals_[std::get<std::string>(name)] = pop();
+            break;
+        }
+
+        case Opcode::GetGlobal: {
+            std::size_t index = read_byte(chunk);
+            const Value& name = chunk.constant_at(index);
+            if (!is_string(name)) {
+                return fail("global name operand is not a string", chunk);
+            }
+
+            auto found = globals_.find(std::get<std::string>(name));
+            if (found == globals_.end()) {
+                // word for word what Interpreter::visit_identifier says. the two
+                // backends have to be indistinguishable from the outside, and an
+                // error message is the part of that a user actually reads.
+                return fail("undefined variable '" + std::get<std::string>(name) + "'", chunk);
+            }
+            push(found->second);
+            break;
+        }
+
+        case Opcode::SetGlobal: {
+            std::size_t index = read_byte(chunk);
+            const Value& name = chunk.constant_at(index);
+            if (!is_string(name)) {
+                return fail("global name operand is not a string", chunk);
+            }
+
+            auto found = globals_.find(std::get<std::string>(name));
+            if (found == globals_.end()) {
+                // assigning to a name nobody bound is an error and not a quiet
+                // definition, so a typo on the left of an `=` is caught instead
+                // of creating a second variable that shadows nothing. same rule
+                // as Environment::assign.
+                return fail("undefined variable '" + std::get<std::string>(name) + "'", chunk);
+            }
+
+            // peek, not pop. assignment is an expression and its value is the
+            // value assigned, so it stays for whatever is around it — the Pop
+            // that balances the statement comes from visit_expr_stmt.
+            found->second = peek(0);
+            break;
+        }
+
         case Opcode::Return:
             // step 83 makes this hand a value back to the caller of a function.
             // at the top level there is no caller, so it just stops, and stopping
@@ -272,6 +330,12 @@ InterpretResult VM::run(const Chunk& chunk) {
     // means either an empty chunk or a hand-built one, and neither is worth
     // calling an error.
     return InterpretResult::Ok;
+}
+
+const Value* VM::global(const std::string& name) const {
+    auto found = globals_.find(name);
+    if (found == globals_.end()) return nullptr;
+    return &found->second;
 }
 
 const RuntimeError* VM::error() const { return error_ ? &*error_ : nullptr; }

@@ -31,6 +31,16 @@ void write_constant(Chunk& chunk, Value value, int line = 1) {
     chunk.write(static_cast<uint8_t>(index), line);
 }
 
+// the same thing for a name, plus whichever global opcode wants it. the operand
+// is an index into the pool and not the name itself, so writing one of these by
+// hand is two lines and a chance to point at the wrong constant.
+void write_global(Chunk& chunk, Opcode op, const std::string& name, int line = 1) {
+    std::size_t index = chunk.add_constant(name);
+    REQUIRE(index < Chunk::max_constants);
+    chunk.write(op, line);
+    chunk.write(static_cast<uint8_t>(index), line);
+}
+
 } // namespace
 
 TEST_CASE("an empty chunk stops right away", "[vm]") {
@@ -759,4 +769,193 @@ TEST_CASE("nothing is on the stack trace yet", "[vm]") {
     REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
     REQUIRE(vm.error() != nullptr);
     REQUIRE(vm.error()->trace().empty());
+}
+
+TEST_CASE("DefineGlobal binds the value on top to the name", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{42});
+    write_global(chunk, Opcode::DefineGlobal, "x");
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.global("x") != nullptr);
+    REQUIRE(std::get<int64_t>(*vm.global("x")) == 42);
+}
+
+TEST_CASE("DefineGlobal takes the value off the stack", "[vm]") {
+    // `let` is a statement, so it has to leave the stack the way it found it.
+    // everything from step 76 on is built on that holding.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    write_global(chunk, Opcode::DefineGlobal, "x");
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("GetGlobal pushes what the name was bound to", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{7});
+    write_global(chunk, Opcode::DefineGlobal, "n");
+    write_global(chunk, Opcode::GetGlobal, "n");
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 7);
+}
+
+TEST_CASE("a global read twice pushes it twice", "[vm]") {
+    // reading does not consume the binding, which is what lets `n + n` work.
+    Chunk chunk;
+    write_constant(chunk, int64_t{3});
+    write_global(chunk, Opcode::DefineGlobal, "n");
+    write_global(chunk, Opcode::GetGlobal, "n");
+    write_global(chunk, Opcode::GetGlobal, "n");
+    chunk.write(Opcode::Add, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 6);
+}
+
+TEST_CASE("defining a name a second time replaces the old binding", "[vm]") {
+    // what Environment::define does, so the tree-walker allows it too and the
+    // two backends have to agree.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    write_global(chunk, Opcode::DefineGlobal, "x");
+    write_constant(chunk, int64_t{2});
+    write_global(chunk, Opcode::DefineGlobal, "x");
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<int64_t>(*vm.global("x")) == 2);
+}
+
+TEST_CASE("reading a name nobody bound is an error", "[vm]") {
+    Chunk chunk;
+    write_global(chunk, Opcode::GetGlobal, "missing", 3);
+    chunk.write(Opcode::Return, 3);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(std::string(vm.error()->what()) == "undefined variable 'missing'");
+    REQUIRE(vm.error()->line() == 3);
+}
+
+TEST_CASE("the undefined variable message matches the tree-walker's", "[vm]") {
+    // the two backends are supposed to be indistinguishable from the outside,
+    // and the error text is the part a user actually reads. Interpreter's
+    // visit_identifier says exactly this.
+    Chunk chunk;
+    write_global(chunk, Opcode::GetGlobal, "count", 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(format_error(*vm.error()) == "runtime error: undefined variable 'count' (line 1)");
+}
+
+TEST_CASE("globals outlive the run that defined them", "[vm]") {
+    // the repl keeps one VM and compiles each line into its own chunk, so a
+    // `let` typed on one line has to still be there on the next. the stack is
+    // cleared between runs; this deliberately is not.
+    Chunk first;
+    write_constant(first, std::string("hi"));
+    write_global(first, Opcode::DefineGlobal, "greeting");
+    first.write(Opcode::Return, 1);
+
+    Chunk second;
+    write_global(second, Opcode::GetGlobal, "greeting");
+    second.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(first) == InterpretResult::Ok);
+    REQUIRE(vm.run(second) == InterpretResult::Ok);
+    REQUIRE(std::get<std::string>(vm.stack_top()) == "hi");
+}
+
+TEST_CASE("a failed run does not lose the globals defined before it", "[vm]") {
+    // fail() clears the stack so the next repl line is not handed junk, and it
+    // would be easy to clear the globals in the same breath. that would throw
+    // away a whole session over one typo.
+    Chunk chunk;
+    write_constant(chunk, int64_t{5});
+    write_global(chunk, Opcode::DefineGlobal, "kept");
+    write_global(chunk, Opcode::GetGlobal, "gone");
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.global("kept") != nullptr);
+    REQUIRE(std::get<int64_t>(*vm.global("kept")) == 5);
+}
+
+TEST_CASE("SetGlobal writes over an existing binding", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    write_global(chunk, Opcode::DefineGlobal, "a");
+    write_constant(chunk, int64_t{2});
+    write_global(chunk, Opcode::SetGlobal, "a");
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<int64_t>(*vm.global("a")) == 2);
+}
+
+TEST_CASE("SetGlobal leaves the value it assigned on the stack", "[vm]") {
+    // assignment is an expression, so `a = b = 7` needs the inner one to hand
+    // its value back. the Pop that balances a statement comes from elsewhere.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    write_global(chunk, Opcode::DefineGlobal, "a");
+    write_constant(chunk, int64_t{9});
+    write_global(chunk, Opcode::SetGlobal, "a");
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 9);
+}
+
+TEST_CASE("assigning to a name nobody bound is an error, not a definition", "[vm]") {
+    // otherwise a typo on the left of an `=` quietly makes a second variable and
+    // the original never changes. Environment::assign draws the same line.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1}, 2);
+    write_global(chunk, Opcode::SetGlobal, "nope", 2);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(std::string(vm.error()->what()) == "undefined variable 'nope'");
+    REQUIRE(vm.global("nope") == nullptr);
+}
+
+TEST_CASE("a global operand that is not a string is reported", "[vm]") {
+    // the compiler always puts a string there, so reaching this means a chunk
+    // built by hand or an operand byte pointing at the wrong constant. binding a
+    // global called "42" would be a much harder thing to find later.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    std::size_t index = chunk.add_constant(int64_t{99});
+    chunk.write(Opcode::DefineGlobal, 1);
+    chunk.write(static_cast<uint8_t>(index), 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(std::string(vm.error()->what()) == "global name operand is not a string");
+}
+
+TEST_CASE("asking for a global nobody defined gives back nothing", "[vm]") {
+    VM vm;
+    REQUIRE(vm.global("anything") == nullptr);
 }

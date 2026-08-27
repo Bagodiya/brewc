@@ -112,6 +112,13 @@ private:
     // whatever constant_at decides to give it.
     void emit_constant(Value value, const Token& where);
 
+    // put a variable's name in the pool and hand back the index, without emitting
+    // anything. globals are addressed by name rather than by slot, so the three
+    // global opcodes all need this index as their operand — but each of them
+    // wants it at a different point relative to the value being bound, so the
+    // Const half of emit_constant would be in the way.
+    uint8_t name_constant(const std::string& name, const Token& where);
+
     // give up on the whole compile with a CompileError pointed at `where`. every
     // failure funnels through here so the location handling stays in one spot,
     // the same way the parser does it. always throws.

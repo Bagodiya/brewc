@@ -8,7 +8,7 @@ namespace brewc {
 
 namespace {
 
-// widths for the columns. the opcode column is wide enough for JumpIfFalse, the
+// widths for the columns. the opcode column is wide enough for DefineGlobal, the
 // longest name in the enum, plus a space before the operands.
 constexpr int offset_width = 4;
 constexpr int line_width = 4;
@@ -43,9 +43,12 @@ std::size_t simple(const Chunk& chunk, Opcode op, std::size_t offset, std::ostri
     return offset + 1;
 }
 
-// Const, and its operand is an index into the constant pool. the index alone is
-// not much use when you're trying to see whether the right literal got stored, so
-// the value it points at comes along in quotes.
+// Const and the three global opcodes. all four carry an index into the constant
+// pool, and the index alone is not much use when you're trying to see whether the
+// right literal got stored or which name a global reads, so the value it points
+// at comes along in quotes. for a global that value is the name itself, which is
+// the whole point of dumping it — `GetGlobal 2` tells you nothing, `GetGlobal 2
+// 'count'` tells you what the instruction does.
 std::size_t constant(const Chunk& chunk, Opcode op, std::size_t offset, std::ostringstream& out) {
     uint8_t index = chunk.code[offset + 1];
     write_prefix(chunk, offset, out);
@@ -94,6 +97,9 @@ std::size_t jump(const Chunk& chunk, Opcode op, std::size_t offset, int sign,
 std::size_t instruction_length(Opcode op) {
     switch (op) {
     case Opcode::Const:
+    case Opcode::DefineGlobal:
+    case Opcode::GetGlobal:
+    case Opcode::SetGlobal:
     case Opcode::GetLocal:
     case Opcode::SetLocal:
     case Opcode::Call:
@@ -147,6 +153,9 @@ std::size_t disassemble_instruction(const Chunk& chunk, std::size_t offset, std:
     std::size_t next = offset;
     switch (op) {
     case Opcode::Const:
+    case Opcode::DefineGlobal:
+    case Opcode::GetGlobal:
+    case Opcode::SetGlobal:
         next = constant(chunk, op, offset, line);
         break;
     case Opcode::GetLocal:

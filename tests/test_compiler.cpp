@@ -102,10 +102,10 @@ TEST_CASE("a fresh chunk starts with an empty constant pool", "[compiler]") {
 }
 
 TEST_CASE("statements compile without the stubs blowing up", "[compiler]") {
-    // the statement visitors are still empty, so nothing here reaches down into
-    // the literals inside them yet. all this really checks is that the walk gets
-    // to every node and comes back.
-    REQUIRE(compile_source("let x = 1").size() == 1);
+    // if, while and fn are still empty visitors, so nothing here reaches down
+    // into the statements inside them — the `let` in each body never gets
+    // compiled. all this really checks is that the walk gets to every node and
+    // comes back.
     REQUIRE(compile_source("if 1 < 2 { let y = 3 }").size() == 1);
     REQUIRE(compile_source("while 1 { let z = 2 }").size() == 1);
     REQUIRE(compile_source("fn add(a, b) { let c = a + b }").size() == 1);
@@ -198,8 +198,13 @@ TEST_CASE("the same compiler can run twice without carrying bytes over", "[compi
     Chunk one = compiler.compile(first);
     Chunk two = compiler.compile(second);
 
-    REQUIRE(one.size() == 1);
-    REQUIRE(two.size() == 1);
+    REQUIRE(one.size() == two.size());
+
+    // the constant pool is where a leftover would show. the second chunk needs
+    // 2 and "b" and nothing else, so anything carried over from the first run
+    // would put four entries in here instead of two.
+    REQUIRE(two.constants.size() == 2);
+    REQUIRE(std::get<std::string>(two.constants[1]) == "b");
 }
 
 TEST_CASE("an addition compiles to both operands then Add", "[compiler]") {
@@ -432,4 +437,72 @@ TEST_CASE("a compile error says which line and column it came from", "[compiler]
     REQUIRE(err.line() == 4);
     REQUIRE(err.column() == 9);
     REQUIRE(std::string(err.what()) == "line 4:9: too many constants in one chunk");
+}
+
+TEST_CASE("a let compiles its initializer and then binds the name", "[compiler]") {
+    // the order is the whole instruction sequence: the value has to be on the
+    // stack before DefineGlobal can take it off.
+    Chunk chunk = compile_source("let x = 1");
+    REQUIRE(op_at(chunk, 0) == Opcode::Const);
+    REQUIRE(op_at(chunk, 2) == Opcode::DefineGlobal);
+    REQUIRE(op_at(chunk, 4) == Opcode::Return);
+}
+
+TEST_CASE("the name a let binds goes in the constant pool as a string", "[compiler]") {
+    Chunk chunk = compile_source("let count = 7");
+    uint8_t index = chunk.code[3];
+    REQUIRE(std::get<std::string>(chunk.constant_at(index)) == "count");
+}
+
+TEST_CASE("the value and the name are two separate pool entries", "[compiler]") {
+    // easy to write this so the operand of one instruction points at the other's
+    // constant, and the chunk still looks fine until it runs.
+    Chunk chunk = compile_source("let x = 42");
+    REQUIRE(chunk.constants.size() == 2);
+    REQUIRE(std::get<int64_t>(chunk.constant_at(chunk.code[1])) == 42);
+    REQUIRE(std::get<std::string>(chunk.constant_at(chunk.code[3])) == "x");
+}
+
+TEST_CASE("a let with a compound initializer still binds last", "[compiler]") {
+    // the initializer is a whole subtree here, and DefineGlobal has to wait for
+    // all of it rather than landing after the first operand.
+    Chunk chunk = compile_source("let sum = 1 + 2 * 3");
+    REQUIRE(op_at(chunk, chunk.size() - 3) == Opcode::DefineGlobal);
+}
+
+TEST_CASE("an identifier compiles to a GetGlobal naming it", "[compiler]") {
+    Chunk chunk = compile_expr_source("total");
+    REQUIRE(op_at(chunk, 0) == Opcode::GetGlobal);
+    REQUIRE(std::get<std::string>(chunk.constant_at(chunk.code[1])) == "total");
+}
+
+TEST_CASE("a global read twice costs one pool slot", "[compiler]") {
+    // add_constant already reuses an equal string, so nothing extra is needed
+    // here — but if that ever stopped being true a program with a loop in it
+    // would fill the pool on the variable names alone.
+    Chunk chunk = compile_expr_source("n + n");
+    REQUIRE(chunk.constants.size() == 1);
+    REQUIRE(chunk.code[1] == chunk.code[3]);
+}
+
+TEST_CASE("a global sits where an operand goes in a bigger expression", "[compiler]") {
+    // GetGlobal leaves exactly one value behind like every other expression, so
+    // the Add above it doesn't have to know its operand came from a variable.
+    Chunk chunk = compile_expr_source("x * 2");
+    REQUIRE(op_at(chunk, 0) == Opcode::GetGlobal);
+    REQUIRE(op_at(chunk, 2) == Opcode::Const);
+    REQUIRE(op_at(chunk, 4) == Opcode::Mul);
+}
+
+TEST_CASE("the bind takes the let's line and not the initializer's", "[compiler]") {
+    // same trap the binary operators have: the initializer walked line_ forward
+    // on its way past, and an error on the bind should point at the `let`.
+    Chunk chunk = compile_source("let x =\n1 +\n2");
+    REQUIRE(chunk.line_at(chunk.size() - 3) == 1);
+}
+
+TEST_CASE("two lets bind under two different names", "[compiler]") {
+    Chunk chunk = compile_source("let a = 1\nlet b = 2");
+    REQUIRE(std::get<std::string>(chunk.constant_at(chunk.code[3])) == "a");
+    REQUIRE(std::get<std::string>(chunk.constant_at(chunk.code[7])) == "b");
 }

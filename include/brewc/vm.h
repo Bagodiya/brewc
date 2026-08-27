@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "brewc/chunk.h"
@@ -33,9 +34,10 @@ enum class InterpretResult {
 // emits left before right, and why every visit_* in it leaves exactly one value
 // behind — the two halves only fit together if both sides keep that promise.
 //
-// Const, Return, the arithmetic opcodes and the comparisons are implemented here.
-// the rest stop the run with a RuntimeError instead of falling through to
-// something worse, and get filled in one group at a time over the next steps.
+// Const, Return, the arithmetic opcodes, the comparisons and the globals are
+// implemented here. the rest stop the run with a RuntimeError instead of falling
+// through to something worse, and get filled in one group at a time over the next
+// steps.
 class VM {
 public:
     VM();
@@ -59,6 +61,12 @@ public:
     // and it is this one" — a run that pushed twice and popped once is wrong even
     // when the top of the stack looks right.
     std::size_t stack_size() const;
+
+    // what a global is bound to, or null if that name was never defined. for the
+    // tests, same as stack_top — a `let` leaves nothing on the stack, so without
+    // this there is no way to tell a DefineGlobal that worked from one that
+    // quietly did nothing.
+    const Value* global(const std::string& name) const;
 
     // what went wrong in the last run, or null if it went fine. the caller prints
     // it with format_error() the same way it prints one out of the tree-walker —
@@ -98,6 +106,19 @@ private:
     const Value& peek(std::size_t distance) const;
 
     std::vector<Value> stack_;
+
+    // every global the program has defined, by name. deliberately not cleared by
+    // run(), unlike the stack: the repl keeps one VM for the whole session and
+    // runs each line as its own chunk, so wiping this would mean a `let` on one
+    // line was gone by the next. the tree-walker's Interpreter holds on to its
+    // global Environment for exactly the same reason.
+    //
+    // a map and not a vector of slots because the compiler cannot number these.
+    // it does not know how many globals a program ends up with until it has
+    // compiled all of it, and a function body can name one that is defined
+    // further down the file, so the lookup has to happen at run time off the
+    // name.
+    std::unordered_map<std::string, Value> globals_;
 
     // where the next instruction starts, as an offset into chunk.code. an index
     // and not a pointer on purpose: a pointer into the vector's buffer is only

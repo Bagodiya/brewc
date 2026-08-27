@@ -245,3 +245,55 @@ TEST_CASE("stepping past the end says so rather than crashing", "[disassembler]"
     REQUIRE(contains(out, "past end"));
     REQUIRE(next > 5);
 }
+
+TEST_CASE("a global instruction prints the name and not just the index",
+          "[disassembler]") {
+    // the index on its own tells you nothing. this is the reason the globals go
+    // through the constant printer instead of the plain byte one.
+    Chunk chunk;
+    std::size_t index = chunk.add_constant(std::string("counter"));
+    chunk.write(Opcode::GetGlobal, 1);
+    chunk.write(static_cast<uint8_t>(index), 1);
+
+    std::string line = line_at_offset(chunk, 0);
+    REQUIRE(contains(line, "GetGlobal"));
+    REQUIRE(contains(line, "'counter'"));
+}
+
+TEST_CASE("all three global opcodes decode the same way", "[disassembler]") {
+    Chunk chunk;
+    std::size_t index = chunk.add_constant(std::string("x"));
+    for (Opcode op : {Opcode::DefineGlobal, Opcode::GetGlobal, Opcode::SetGlobal}) {
+        chunk.write(op, 1);
+        chunk.write(static_cast<uint8_t>(index), 1);
+    }
+
+    std::string out = disassemble(chunk, "main");
+    REQUIRE(contains(out, "DefineGlobal"));
+    REQUIRE(contains(out, "SetGlobal"));
+    // one header line plus one per instruction, so the walk stepped over the
+    // operand bytes instead of trying to decode them as opcodes.
+    REQUIRE(count_lines(out) == 4);
+}
+
+TEST_CASE("a global takes two bytes so the next instruction lands at 2",
+          "[disassembler]") {
+    Chunk chunk;
+    std::size_t index = chunk.add_constant(std::string("x"));
+    chunk.write(Opcode::DefineGlobal, 1);
+    chunk.write(static_cast<uint8_t>(index), 1);
+    chunk.write(Opcode::Return, 1);
+
+    std::string out;
+    REQUIRE(disassemble_instruction(chunk, 0, out) == 2);
+}
+
+TEST_CASE("a global missing its operand says so instead of reading past the end",
+          "[disassembler]") {
+    Chunk chunk;
+    chunk.write(Opcode::GetGlobal, 1); // no index byte after it
+
+    std::string line = line_at_offset(chunk, 0);
+    REQUIRE(contains(line, "GetGlobal"));
+    REQUIRE(contains(line, "truncated"));
+}
