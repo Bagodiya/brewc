@@ -138,13 +138,14 @@ TEST_CASE("the top of an empty stack reads as nil", "[vm]") {
 }
 
 TEST_CASE("an opcode this step does not run is an error", "[vm]") {
-    // Pop is a real instruction with no case in the dispatch loop until step 75.
-    // stopping is the point: skipping it would leave the stack a value deeper
-    // than the compiler thinks it is and every later instruction would read the
-    // wrong slot.
+    // GetLocal is a real instruction with no case in the dispatch loop until step
+    // 76. stopping is the point: skipping it would leave the stack a value
+    // shallower than the compiler thinks it is and every later instruction would
+    // read the wrong slot.
     Chunk chunk;
     write_constant(chunk, int64_t{1});
-    chunk.write(Opcode::Pop, 1);
+    chunk.write(Opcode::GetLocal, 1);
+    chunk.write(static_cast<uint8_t>(0), 1);
     chunk.write(Opcode::Return, 1);
 
     VM vm;
@@ -706,16 +707,17 @@ TEST_CASE("negating something that is not a number reports it", "[vm]") {
 }
 
 TEST_CASE("an opcode with no case yet says which one it was", "[vm]") {
-    // Pop has no case until step 75. the message is about the VM and not about
-    // the program, but a stop with nothing to say is worse to run into.
+    // GetLocal has no case until step 76. the message is about the VM and not
+    // about the program, but a stop with nothing to say is worse to run into.
     Chunk chunk;
     write_constant(chunk, int64_t{1}, 4);
-    chunk.write(Opcode::Pop, 4);
+    chunk.write(Opcode::GetLocal, 4);
+    chunk.write(static_cast<uint8_t>(0), 4);
 
     VM vm;
     REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
     REQUIRE(vm.error() != nullptr);
-    REQUIRE(std::string(vm.error()->what()) == "Pop is not implemented yet");
+    REQUIRE(std::string(vm.error()->what()) == "GetLocal is not implemented yet");
     REQUIRE(vm.error()->line() == 4);
 }
 
@@ -958,4 +960,63 @@ TEST_CASE("a global operand that is not a string is reported", "[vm]") {
 TEST_CASE("asking for a global nobody defined gives back nothing", "[vm]") {
     VM vm;
     REQUIRE(vm.global("anything") == nullptr);
+}
+
+TEST_CASE("Pop takes the top value off", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    write_constant(chunk, int64_t{2});
+    chunk.write(Opcode::Pop, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 1);
+}
+
+TEST_CASE("Pop removes one value and not everything above it", "[vm]") {
+    // three pushes and two Pops has to leave one. a Pop that cleared the stack
+    // would look right in every test with a single value on it.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    write_constant(chunk, int64_t{2});
+    write_constant(chunk, int64_t{3});
+    chunk.write(Opcode::Pop, 1);
+    chunk.write(Opcode::Pop, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 1);
+}
+
+TEST_CASE("a Pop with nothing under it does not take the run down", "[vm]") {
+    // the compiler only writes a Pop straight after something that pushed, so
+    // this is a chunk built by hand. pop() answers an empty stack with nil
+    // instead of reading off the end of the vector.
+    Chunk chunk;
+    chunk.write(Opcode::Pop, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("Pop leaves the globals alone", "[vm]") {
+    // it only ever means "this statement's value is finished with". a binding
+    // made before it is nothing to do with the stack.
+    Chunk chunk;
+    write_constant(chunk, int64_t{7});
+    write_global(chunk, Opcode::DefineGlobal, "a");
+    write_global(chunk, Opcode::GetGlobal, "a");
+    chunk.write(Opcode::Pop, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 0);
+    REQUIRE(std::get<int64_t>(*vm.global("a")) == 7);
 }

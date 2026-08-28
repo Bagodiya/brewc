@@ -34,7 +34,7 @@ enum class InterpretResult {
 // emits left before right, and why every visit_* in it leaves exactly one value
 // behind — the two halves only fit together if both sides keep that promise.
 //
-// Const, Return, the arithmetic opcodes, the comparisons and the globals are
+// Const, Return, Pop, the arithmetic opcodes, the comparisons and the globals are
 // implemented here. the rest stop the run with a RuntimeError instead of falling
 // through to something worse, and get filled in one group at a time over the next
 // steps.

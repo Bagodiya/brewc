@@ -331,6 +331,26 @@ void Compiler::visit_let(LetStmt& stmt) {
     emit(Opcode::DefineGlobal, name_constant(stmt.name, stmt.name_token));
 }
 
+// an expression on a line of its own, like `print(x)`. compile it the normal way
+// and then throw the value away again, because a statement has to leave the stack
+// exactly as it found it.
+//
+// that rule is worth more than it looks. a while loop jumps back to its condition
+// on every turn, and if each pass through the body left one value behind the stack
+// would grow with the iteration count instead of staying flat. locals in step 76
+// are named by a slot number the compiler works out by counting what is on the
+// stack, and that count is only right while every statement balances. so this one
+// Pop is what the rest of the phase is built on top of.
+//
+// there is no set_line here, unlike everywhere else. the other visitors put their
+// own token's line back because their instruction belongs to an operator or a
+// name; this Pop belongs to the end of the expression, which is where line_ is
+// already sitting. ExprStmt has no token of its own to ask anyway.
+void Compiler::visit_expr_stmt(ExprStmt& stmt) {
+    compile_expr(*stmt.expr);
+    emit(Opcode::Pop);
+}
+
 // everything below is a stub until the step that fills it in. the parameters are
 // cast to void so -Wunused-parameter stays quiet without the names disappearing
 // from the signatures, which would make the diffs in those steps harder to read.
@@ -346,8 +366,6 @@ void Compiler::visit_while(WhileStmt& stmt) { (void)stmt; }
 void Compiler::visit_block(BlockStmt& stmt) { (void)stmt; }
 
 void Compiler::visit_fn(FnDecl& stmt) { (void)stmt; }
-
-void Compiler::visit_expr_stmt(ExprStmt& stmt) { (void)stmt; }
 
 void Compiler::visit_return(ReturnStmt& stmt) { (void)stmt; }
 

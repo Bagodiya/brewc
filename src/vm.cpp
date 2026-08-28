@@ -303,6 +303,19 @@ InterpretResult VM::run(const Chunk& chunk) {
             break;
         }
 
+        case Opcode::Pop:
+            // whatever the statement in front of this left behind. nothing reads
+            // the value on the way out, so it is dropped and not moved anywhere
+            // first.
+            //
+            // popping an empty stack hands back nil instead of reading off the
+            // end. that never happens on a chunk the compiler wrote, since it
+            // only emits a Pop right after something that pushed, but a chunk
+            // built by hand in a test can be unbalanced and taking the process
+            // down over it would be worse than doing nothing.
+            pop();
+            break;
+
         case Opcode::Return:
             // step 83 makes this hand a value back to the caller of a function.
             // at the top level there is no caller, so it just stops, and stopping

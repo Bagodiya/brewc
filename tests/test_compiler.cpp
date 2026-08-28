@@ -13,6 +13,7 @@
 #include "brewc/lexer.h"
 #include "brewc/parser.h"
 #include "brewc/token.h"
+#include "brewc/vm.h"
 
 using namespace brewc;
 
@@ -58,9 +59,10 @@ Opcode op_at(const Chunk& chunk, std::size_t offset) {
     return static_cast<Opcode>(chunk.code[offset]);
 }
 
-// compile a lone literal token. there is no expression statement in the grammar,
-// so a bare `42` can't be parsed at the top level of a program — the node has to
-// be built by hand and fed to compile_expression.
+// compile a lone literal token. a bare `42` does parse as a statement now, but
+// going through the parser gives whatever line and column the source happens to
+// put it at, and some of the checks below are about exactly those. building the
+// node by hand is the only way to pick them.
 Chunk compile_literal(TokenKind kind, const std::string& text, int line = 1, int column = 1) {
     Compiler compiler;
     LiteralExpr literal(Token(kind, text, line, column));
@@ -78,6 +80,14 @@ Chunk compile_expr_source(const std::string& source) {
 
     Compiler compiler;
     return compiler.compile_expression(*expr);
+}
+
+// compile a whole program and run it. everything else in this file reads the
+// bytes back, but a Pop is only worth anything for what the stack looks like when
+// the program finishes, and the chunk on its own can't show that.
+void run_source(VM& vm, const std::string& source) {
+    Chunk chunk = compile_source(source);
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
 }
 
 } // namespace
@@ -505,4 +515,69 @@ TEST_CASE("two lets bind under two different names", "[compiler]") {
     Chunk chunk = compile_source("let a = 1\nlet b = 2");
     REQUIRE(std::get<std::string>(chunk.constant_at(chunk.code[3])) == "a");
     REQUIRE(std::get<std::string>(chunk.constant_at(chunk.code[7])) == "b");
+}
+
+TEST_CASE("an expression statement compiles to the expression then a Pop", "[compiler]") {
+    Chunk chunk = compile_source("1 + 2");
+
+    // two Consts with an index each, the Add, the Pop, and the Return on the end.
+    REQUIRE(chunk.size() == 7);
+    REQUIRE(op_at(chunk, 4) == Opcode::Add);
+    REQUIRE(op_at(chunk, 5) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 6) == Opcode::Return);
+}
+
+TEST_CASE("the Pop throws away the result and not the work", "[compiler]") {
+    // both reads and the Add are still emitted. dropping the value at the end is
+    // not the same as deciding the expression doesn't need compiling — it can
+    // have side effects, and once calls land in step 82 that is the only reason
+    // most expression statements are written at all.
+    Chunk chunk = compile_source("let a = 1\na + a");
+    REQUIRE(op_at(chunk, 4) == Opcode::GetGlobal);
+    REQUIRE(op_at(chunk, 6) == Opcode::GetGlobal);
+    REQUIRE(op_at(chunk, 8) == Opcode::Add);
+    REQUIRE(op_at(chunk, 9) == Opcode::Pop);
+}
+
+TEST_CASE("each expression statement gets a Pop of its own", "[compiler]") {
+    Chunk chunk = compile_source("1\n2");
+
+    // Const, index, Pop for the first, the same three for the second, Return.
+    REQUIRE(chunk.size() == 7);
+    REQUIRE(op_at(chunk, 2) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 5) == Opcode::Pop);
+}
+
+TEST_CASE("the Pop is stamped with the line its expression ended on", "[compiler]") {
+    // there is no token of its own to take a line from, so it keeps whatever the
+    // expression left behind. that is the right answer anyway — the Pop belongs
+    // to the end of the statement.
+    Chunk chunk = compile_source("1\n2");
+    REQUIRE(chunk.line_at(2) == 1);
+    REQUIRE(chunk.line_at(5) == 2);
+}
+
+TEST_CASE("a program of expression statements ends with an empty stack", "[compiler]") {
+    VM vm;
+    run_source(vm, "1 2 3 4 5 6 7 8 9 10");
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("mixing lets and expression statements still balances out", "[compiler]") {
+    // the invariant the rest of the phase is built on: an expression leaves one
+    // value behind, a statement leaves none. a while loop jumps back to its
+    // condition on every turn, so a body that gained a value per pass would grow
+    // the stack with the iteration count.
+    VM vm;
+    run_source(vm, "let a = 1\na + 2\nlet b = a + 3\nb < 10");
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("the statement still leaves its value bound where it belongs", "[compiler]") {
+    // balancing the stack is not the same as throwing the program away. the
+    // globals are untouched by the Pop.
+    VM vm;
+    run_source(vm, "let a = 4\na * 2");
+    REQUIRE(vm.global("a") != nullptr);
+    REQUIRE(std::get<int64_t>(*vm.global("a")) == 4);
 }
