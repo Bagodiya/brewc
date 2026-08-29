@@ -114,8 +114,8 @@ TEST_CASE("a fresh chunk starts with an empty constant pool", "[compiler]") {
 TEST_CASE("statements compile without the stubs blowing up", "[compiler]") {
     // if, while and fn are still empty visitors, so nothing here reaches down
     // into the statements inside them — the `let` in each body never gets
-    // compiled. all this really checks is that the walk gets to every node and
-    // comes back.
+    // compiled, and the block they wrap never opens a scope either. all this
+    // really checks is that the walk gets to every node and comes back.
     REQUIRE(compile_source("if 1 < 2 { let y = 3 }").size() == 1);
     REQUIRE(compile_source("while 1 { let z = 2 }").size() == 1);
     REQUIRE(compile_source("fn add(a, b) { let c = a + b }").size() == 1);
@@ -580,4 +580,184 @@ TEST_CASE("the statement still leaves its value bound where it belongs", "[compi
     run_source(vm, "let a = 4\na * 2");
     REQUIRE(vm.global("a") != nullptr);
     REQUIRE(std::get<int64_t>(*vm.global("a")) == 4);
+}
+
+TEST_CASE("a let inside a block emits no bind instruction at all", "[compiler]") {
+    // the initializer already put the value on the stack and that spot is the
+    // variable, so there is nothing left to do. Const, its index, the Pop that
+    // end_scope emits, and the Return.
+    Chunk chunk = compile_source("{ let x = 1 }");
+    REQUIRE(chunk.size() == 4);
+    REQUIRE(op_at(chunk, 0) == Opcode::Const);
+    REQUIRE(op_at(chunk, 2) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 3) == Opcode::Return);
+}
+
+TEST_CASE("a local's name never reaches the constant pool", "[compiler]") {
+    // that is the saving over a global: no pool entry and no hash lookup, just a
+    // slot number the compiler worked out while it was walking.
+    Chunk chunk = compile_source("{ let counter = 1 }");
+    REQUIRE(chunk.constants.size() == 1);
+    REQUIRE(std::get<int64_t>(chunk.constant_at(0)) == 1);
+}
+
+TEST_CASE("reading a local compiles to GetLocal and its slot", "[compiler]") {
+    Chunk chunk = compile_source("{ let x = 7 x }");
+    REQUIRE(op_at(chunk, 2) == Opcode::GetLocal);
+    REQUIRE(chunk.code[3] == 0);
+}
+
+TEST_CASE("locals are numbered in declaration order", "[compiler]") {
+    Chunk chunk = compile_source("{ let a = 1 let b = 2 b a }");
+
+    // Const/index twice, then the two reads. b was declared second so it is in
+    // slot 1, whichever order they are read back in.
+    REQUIRE(op_at(chunk, 4) == Opcode::GetLocal);
+    REQUIRE(chunk.code[5] == 1);
+    REQUIRE(op_at(chunk, 7) == Opcode::GetLocal);
+    REQUIRE(chunk.code[8] == 0);
+}
+
+TEST_CASE("a name that is not a local still compiles to a global", "[compiler]") {
+    Chunk chunk = compile_source("let outer = 1\n{ outer }");
+    REQUIRE(op_at(chunk, 4) == Opcode::GetGlobal);
+}
+
+TEST_CASE("a local shadows a global of the same name", "[compiler]") {
+    // resolve_local runs first, so inside the block the name means the slot and
+    // not the map entry. the other way round and the block would read whatever
+    // the file bound at the top.
+    Chunk chunk = compile_source("let x = 1\n{ let x = 2 x }");
+    REQUIRE(op_at(chunk, 6) == Opcode::GetLocal);
+}
+
+TEST_CASE("an inner local shadows an outer one", "[compiler]") {
+    // searching locals_ backwards is what does this. forwards would find the
+    // outer x, which is still in scope and still has a slot.
+    Chunk chunk = compile_source("{ let x = 1 { let x = 2 x } }");
+    REQUIRE(op_at(chunk, 4) == Opcode::GetLocal);
+    REQUIRE(chunk.code[5] == 1);
+}
+
+TEST_CASE("the outer local is back once the inner block ends", "[compiler]") {
+    Chunk chunk = compile_source("{ let x = 1 { let x = 2 } x }");
+
+    // the inner block's Pop, then the read, which is slot 0 again.
+    REQUIRE(op_at(chunk, 4) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 5) == Opcode::GetLocal);
+    REQUIRE(chunk.code[6] == 0);
+}
+
+TEST_CASE("an initializer reads the outer variable and not the one being declared",
+          "[compiler]") {
+    // the local is only added after its initializer compiled, so the x on the
+    // right is the outer one. Interpreter::visit_let gets the same answer for
+    // the same reason — it calls define() once it has a value.
+    Chunk chunk = compile_source("{ let x = 1 { let x = x } }");
+    REQUIRE(op_at(chunk, 2) == Opcode::GetLocal);
+    REQUIRE(chunk.code[3] == 0);
+}
+
+TEST_CASE("every local in a block is popped on the way out", "[compiler]") {
+    Chunk chunk = compile_source("{ let a = 1 let b = 2 let c = 3 }");
+
+    // three Const/index pairs and then one Pop each.
+    REQUIRE(op_at(chunk, 6) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 7) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 8) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 9) == Opcode::Return);
+}
+
+TEST_CASE("a block with no locals in it pops nothing", "[compiler]") {
+    // the Pops belong to the declarations, not to the braces.
+    Chunk chunk = compile_source("{ 1 }");
+    REQUIRE(chunk.size() == 4);
+    REQUIRE(op_at(chunk, 2) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 3) == Opcode::Return);
+}
+
+TEST_CASE("a nested block pops its own locals and the outer ones separately", "[compiler]") {
+    Chunk chunk = compile_source("{ let a = 1 { let b = 2 let c = 3 } }");
+
+    // three declarations, three Pops, and end_scope ran twice to emit them —
+    // twice for b and c when the inner block closed, once more for a at the end.
+    // which Pop belongs to which block is what the shadowing test above pins
+    // down; all this counts is that none of them went missing.
+    REQUIRE(op_at(chunk, 6) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 7) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 8) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 9) == Opcode::Return);
+}
+
+TEST_CASE("a let at the top level is still a global", "[compiler]") {
+    // depth 0 has no stack slot to live in that would outlast the statement, and
+    // a function compiled further down the file has to be able to name it.
+    Chunk chunk = compile_source("let x = 1");
+    REQUIRE(op_at(chunk, 2) == Opcode::DefineGlobal);
+}
+
+TEST_CASE("more locals than a slot number can name is a compile error", "[compiler]") {
+    std::string source = "{\n";
+    for (int i = 0; i < 257; ++i) {
+        source += "let v" + std::to_string(i) + " = 1\n";
+    }
+    source += "}";
+
+    std::vector<std::unique_ptr<Stmt>> program = parse_program(source);
+    Compiler compiler;
+    REQUIRE_THROWS_AS(compiler.compile(program), CompileError);
+}
+
+TEST_CASE("256 locals is still fine", "[compiler]") {
+    // the limit is what one byte can name, so the 256th is the last one that
+    // fits and the error belongs on the one after it.
+    std::string source = "{\n";
+    for (int i = 0; i < 256; ++i) {
+        source += "let v" + std::to_string(i) + " = 1\n";
+    }
+    source += "}";
+
+    std::vector<std::unique_ptr<Stmt>> program = parse_program(source);
+    Compiler compiler;
+    REQUIRE_NOTHROW(compiler.compile(program));
+}
+
+TEST_CASE("a block leaves the stack the way it found it", "[compiler]") {
+    VM vm;
+    run_source(vm, "{ let a = 1 let b = a + 1 b }");
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("a local reads back the value that was bound to it", "[compiler]") {
+    // there is no way to see a local from outside the block, since the Pop takes
+    // it away again, so this goes at it through an error the value decides: the
+    // message names the type of whatever the GetLocal pushed.
+    Chunk chunk = compile_source("{ let x = \"hi\" x + 1 }");
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(std::string(vm.error()->what()) == "cannot apply '+' to string and int");
+}
+
+TEST_CASE("the block's local does not touch the global it shadows", "[compiler]") {
+    // the whole point of the two being different storage. the block binds its own
+    // x in a slot and the global keeps the value it had.
+    VM vm;
+    run_source(vm, "let x = 1\n{ let x = 99 }");
+    REQUIRE(std::get<int64_t>(*vm.global("x")) == 1);
+}
+
+TEST_CASE("a compiler reused after a block starts at the top level again", "[compiler]") {
+    // scope_depth_ and locals_ both survive the compile unless reset clears them,
+    // and a second program starting at depth 1 would turn its top-level lets into
+    // locals nobody ever pops.
+    std::vector<std::unique_ptr<Stmt>> first = parse_program("{ let a = 1 }");
+    std::vector<std::unique_ptr<Stmt>> second = parse_program("let b = 2");
+
+    Compiler compiler;
+    compiler.compile(first);
+    Chunk chunk = compiler.compile(second);
+
+    REQUIRE(op_at(chunk, 2) == Opcode::DefineGlobal);
 }

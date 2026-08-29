@@ -139,6 +139,12 @@ void Compiler::reset() {
     // the same Compiler for a second program.
     chunk_ = Chunk{};
     line_ = 1;
+
+    // a compile that stopped part way through a block left both of these where it
+    // gave up, and starting the next program at depth 2 with someone else's
+    // locals still listed would resolve names to slots that hold nothing.
+    locals_.clear();
+    scope_depth_ = 0;
 }
 
 void Compiler::emit(Opcode op) { chunk_.write(op, line_); }
@@ -169,6 +175,47 @@ uint8_t Compiler::name_constant(const std::string& name, const Token& where) {
              where);
     }
     return static_cast<uint8_t>(index);
+}
+
+void Compiler::begin_scope() { ++scope_depth_; }
+
+void Compiler::end_scope() {
+    --scope_depth_;
+
+    // the locals declared inside the block are still on the stack — nothing put
+    // them there but the initializer that pushed the value, and nothing has taken
+    // them off. so one Pop each on the way out, or the stack would be deeper
+    // after the block than before it and every slot number worked out later would
+    // be off by however many were left behind.
+    //
+    // popping from the back is the only order that works, since the innermost
+    // local is the one on top.
+    while (!locals_.empty() && locals_.back().depth > scope_depth_) {
+        emit(Opcode::Pop);
+        locals_.pop_back();
+    }
+}
+
+void Compiler::add_local(const std::string& name, const Token& where) {
+    if (locals_.size() >= max_locals) {
+        fail("too many local variables in one scope (max " + std::to_string(max_locals) + ")",
+             where);
+    }
+
+    // a name already used at this depth is not an error. it shadows, and since
+    // resolve_local searches backwards the new entry is the one that gets found
+    // from here on. Environment::define does the same thing in the tree-walker,
+    // so `let x = 1 let x = x + 1` means the same in both backends.
+    locals_.push_back(Local{name, scope_depth_});
+}
+
+int Compiler::resolve_local(const std::string& name) const {
+    for (std::size_t i = locals_.size(); i > 0; --i) {
+        if (locals_[i - 1].name == name) {
+            return static_cast<int>(i - 1);
+        }
+    }
+    return -1;
 }
 
 void Compiler::fail(const std::string& message, const Token& where) {
@@ -296,11 +343,28 @@ void Compiler::visit_unary(UnaryExpr& expr) {
 // that sounds backwards for something called a compiler, but a global can be
 // defined after the code that reads it was already compiled — a function body
 // mentioning `print` is compiled before anything has bound `print` — and a name
-// is the only handle both halves can agree on before the program runs. locals
-// are the case where the compiler really does know the answer up front, and step
-// 76 resolves those to a stack slot; until then every identifier is a global.
+// is the only handle both halves can agree on before the program runs.
+//
+// a local is the case where the compiler does know the answer up front, so it is
+// tried first: the name was declared in a block we are still inside, which means
+// its slot number is already sitting in locals_ and GetLocal can carry it
+// directly. no pool entry, no hash lookup at run time, just an index into the
+// stack.
+//
+// the order between the two is not a preference, it is the scoping rule. a local
+// has to win over a global of the same name, or `let x = 1` inside a block would
+// still read whatever the file bound `x` to at the top.
 void Compiler::visit_identifier(IdentifierExpr& expr) {
     set_line(expr.token);
+
+    int slot = resolve_local(expr.name);
+    if (slot >= 0) {
+        // the cast is safe because add_local refuses the 257th local, so no slot
+        // that made it into locals_ is past 255.
+        emit(Opcode::GetLocal, static_cast<uint8_t>(slot));
+        return;
+    }
+
     emit(Opcode::GetGlobal, name_constant(expr.name, expr.token));
 }
 
@@ -328,6 +392,22 @@ void Compiler::visit_let(LetStmt& stmt) {
     // visit_binary. put the name's line back so an error on the bind points at
     // the `let` and not at the tail of a long expression.
     set_line(stmt.name_token);
+
+    // inside a block there is no instruction at all. the initializer already put
+    // the value on the stack and that spot is the variable — the compiler just
+    // writes down which slot it landed in and every later read of the name turns
+    // into that number. so a local costs nothing to declare, where a global costs
+    // a pool entry, an instruction and a hash lookup on every use.
+    //
+    // it also means the local is only declared *after* its initializer compiled,
+    // which is what makes `{ let x = x }` read the outer x rather than itself.
+    // the tree-walker gets the same answer for the same reason: it calls define()
+    // with the value once it has one.
+    if (scope_depth_ > 0) {
+        add_local(stmt.name, stmt.name_token);
+        return;
+    }
+
     emit(Opcode::DefineGlobal, name_constant(stmt.name, stmt.name_token));
 }
 
@@ -351,6 +431,28 @@ void Compiler::visit_expr_stmt(ExprStmt& stmt) {
     emit(Opcode::Pop);
 }
 
+// `{ ... }` is its own scope, so anything `let` binds inside is gone again on the
+// way out. the statements themselves need nothing special — they compile exactly
+// as they would at the top level, the depth is what changes where their `let`s
+// end up.
+//
+// the Pops end_scope emits are the whole reason a block is more than a loop over
+// its statements. the values are on the stack and only the compiler knows how
+// many of them there are, since it is the one that counted the slots.
+//
+// there is no set_line, same as visit_expr_stmt: a block has no token of its own
+// and line_ is already at the last statement in it, which is close enough to the
+// closing brace for the Pops to blame.
+void Compiler::visit_block(BlockStmt& stmt) {
+    begin_scope();
+
+    for (std::unique_ptr<Stmt>& inner : stmt.statements) {
+        compile_stmt(*inner);
+    }
+
+    end_scope();
+}
+
 // everything below is a stub until the step that fills it in. the parameters are
 // cast to void so -Wunused-parameter stays quiet without the names disappearing
 // from the signatures, which would make the diffs in those steps harder to read.
@@ -362,8 +464,6 @@ void Compiler::visit_assign(AssignExpr& expr) { (void)expr; }
 void Compiler::visit_if(IfStmt& stmt) { (void)stmt; }
 
 void Compiler::visit_while(WhileStmt& stmt) { (void)stmt; }
-
-void Compiler::visit_block(BlockStmt& stmt) { (void)stmt; }
 
 void Compiler::visit_fn(FnDecl& stmt) { (void)stmt; }
 

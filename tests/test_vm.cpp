@@ -41,6 +41,14 @@ void write_global(Chunk& chunk, Opcode op, const std::string& name, int line = 1
     chunk.write(static_cast<uint8_t>(index), line);
 }
 
+// a slot opcode and the byte that says which slot. the operand is a position on
+// the stack rather than an index into the pool, so unlike write_global there is
+// nothing to add anywhere first — the value has to have been pushed already.
+void write_local(Chunk& chunk, Opcode op, uint8_t slot, int line = 1) {
+    chunk.write(op, line);
+    chunk.write(slot, line);
+}
+
 } // namespace
 
 TEST_CASE("an empty chunk stops right away", "[vm]") {
@@ -138,13 +146,13 @@ TEST_CASE("the top of an empty stack reads as nil", "[vm]") {
 }
 
 TEST_CASE("an opcode this step does not run is an error", "[vm]") {
-    // GetLocal is a real instruction with no case in the dispatch loop until step
-    // 76. stopping is the point: skipping it would leave the stack a value
-    // shallower than the compiler thinks it is and every later instruction would
-    // read the wrong slot.
+    // Call is a real instruction with no case in the dispatch loop until step 82.
+    // stopping is the point: skipping it would leave the stack a value shallower
+    // than the compiler thinks it is and every later instruction would read the
+    // wrong slot.
     Chunk chunk;
     write_constant(chunk, int64_t{1});
-    chunk.write(Opcode::GetLocal, 1);
+    chunk.write(Opcode::Call, 1);
     chunk.write(static_cast<uint8_t>(0), 1);
     chunk.write(Opcode::Return, 1);
 
@@ -707,17 +715,17 @@ TEST_CASE("negating something that is not a number reports it", "[vm]") {
 }
 
 TEST_CASE("an opcode with no case yet says which one it was", "[vm]") {
-    // GetLocal has no case until step 76. the message is about the VM and not
-    // about the program, but a stop with nothing to say is worse to run into.
+    // Call has no case until step 82. the message is about the VM and not about
+    // the program, but a stop with nothing to say is worse to run into.
     Chunk chunk;
     write_constant(chunk, int64_t{1}, 4);
-    chunk.write(Opcode::GetLocal, 4);
+    chunk.write(Opcode::Call, 4);
     chunk.write(static_cast<uint8_t>(0), 4);
 
     VM vm;
     REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
     REQUIRE(vm.error() != nullptr);
-    REQUIRE(std::string(vm.error()->what()) == "GetLocal is not implemented yet");
+    REQUIRE(std::string(vm.error()->what()) == "Call is not implemented yet");
     REQUIRE(vm.error()->line() == 4);
 }
 
@@ -1019,4 +1027,119 @@ TEST_CASE("Pop leaves the globals alone", "[vm]") {
     REQUIRE(vm.run(chunk) == InterpretResult::Ok);
     REQUIRE(vm.stack_size() == 0);
     REQUIRE(std::get<int64_t>(*vm.global("a")) == 7);
+}
+
+TEST_CASE("GetLocal pushes a copy of the slot it names", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{5});
+    write_local(chunk, Opcode::GetLocal, 0);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+
+    // two values, not one. the local is still in slot 0 where the next read of
+    // it expects to find it — a GetLocal that moved the value out would work
+    // once and then hand back nil.
+    REQUIRE(vm.stack_size() == 2);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 5);
+}
+
+TEST_CASE("GetLocal counts slots from the bottom of the stack", "[vm]") {
+    // the compiler numbers locals in declaration order, so slot 0 is the one
+    // declared first and therefore the one furthest down. counting from the top
+    // instead would read the right value in every test with one local on the
+    // stack and the wrong one everywhere else.
+    Chunk chunk;
+    write_constant(chunk, int64_t{10});
+    write_constant(chunk, int64_t{20});
+    write_local(chunk, Opcode::GetLocal, 0);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 10);
+}
+
+TEST_CASE("the same local can be read more than once", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{3});
+    write_local(chunk, Opcode::GetLocal, 0);
+    write_local(chunk, Opcode::GetLocal, 0);
+    chunk.write(Opcode::Add, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 6);
+}
+
+TEST_CASE("SetLocal writes over the slot", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    write_constant(chunk, int64_t{9});
+    write_local(chunk, Opcode::SetLocal, 0);
+    chunk.write(Opcode::Pop, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 9);
+}
+
+TEST_CASE("SetLocal leaves the value it assigned on the stack", "[vm]") {
+    // same rule as SetGlobal. assignment is an expression and `a = b = 7` needs
+    // the value to still be there for the outer one to use.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    write_constant(chunk, int64_t{9});
+    write_local(chunk, Opcode::SetLocal, 0);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 2);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 9);
+}
+
+TEST_CASE("a slot number past the end of the stack is reported", "[vm]") {
+    // the compiler only names a slot it counted onto the stack itself, so this
+    // is a hand-built chunk. stopping beats indexing off the end of the vector.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1}, 3);
+    write_local(chunk, Opcode::GetLocal, 4, 3);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(std::string(vm.error()->what()) == "local slot 4 is out of range");
+    REQUIRE(vm.error()->line() == 3);
+}
+
+TEST_CASE("SetLocal checks its slot the same way", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{1}, 2);
+    write_local(chunk, Opcode::SetLocal, 7, 2);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(std::string(vm.error()->what()) == "local slot 7 is out of range");
+}
+
+TEST_CASE("a local and a global with the same name are two different things", "[vm]") {
+    // nothing in the VM ties them together — one is a slot and the other is a
+    // map entry, and which of the two an instruction touches was decided by the
+    // compiler. writing the local has to leave the global where it was.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    write_global(chunk, Opcode::DefineGlobal, "x");
+    write_constant(chunk, int64_t{2});
+    write_constant(chunk, int64_t{3});
+    write_local(chunk, Opcode::SetLocal, 0);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<int64_t>(*vm.global("x")) == 1);
 }

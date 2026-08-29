@@ -34,10 +34,10 @@ enum class InterpretResult {
 // emits left before right, and why every visit_* in it leaves exactly one value
 // behind — the two halves only fit together if both sides keep that promise.
 //
-// Const, Return, Pop, the arithmetic opcodes, the comparisons and the globals are
-// implemented here. the rest stop the run with a RuntimeError instead of falling
-// through to something worse, and get filled in one group at a time over the next
-// steps.
+// Const, Return, Pop, the arithmetic opcodes, the comparisons, the globals and the
+// locals are implemented here. the rest stop the run with a RuntimeError instead
+// of falling through to something worse, and get filled in one group at a time
+// over the next steps.
 class VM {
 public:
     VM();
@@ -100,9 +100,10 @@ private:
     Value pop();
 
     // look at a value without removing it. distance 0 is the top, 1 the one under
-    // it. nothing needs it yet — the arithmetic opcodes pop both operands and let
-    // the value_ops helpers decide whether the pair made sense — but the jumps in
-    // step 78 have to read a condition they are not allowed to consume.
+    // it. the two store opcodes are what want this: an assignment has to leave
+    // its value on the stack for whatever is around it, so it reads the top
+    // without consuming it. the jumps in step 78 need the same thing for a
+    // condition they are not allowed to eat.
     const Value& peek(std::size_t distance) const;
 
     std::vector<Value> stack_;

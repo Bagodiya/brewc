@@ -1,6 +1,7 @@
 #ifndef BREWC_COMPILER_H
 #define BREWC_COMPILER_H
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -45,9 +46,9 @@ private:
 // convention every visit_* below follows is: whatever you compile, exactly one
 // value is on the stack afterwards.
 //
-// literals, arithmetic, comparisons, globals and expression statements are wired
-// up so far. the rest of the visit_* bodies are still stubs and get filled in one
-// at a time over the next steps.
+// literals, arithmetic, comparisons, variables, blocks and expression statements
+// are wired up so far. the rest of the visit_* bodies are still stubs and get
+// filled in one at a time over the next steps.
 class Compiler : public Visitor, public StmtVisitor {
 public:
     Compiler();
@@ -112,6 +113,31 @@ private:
     // whatever constant_at decides to give it.
     void emit_constant(Value value, const Token& where);
 
+    // open and close a block's scope. begin_scope only bumps the depth; the work
+    // is all in end_scope, which drops every local declared inside the block and
+    // emits one Pop each, because those values are still sitting on the VM stack
+    // and nothing else is going to take them off.
+    void begin_scope();
+    void end_scope();
+
+    // remember a local under the current depth. the value it names is already on
+    // top of the stack, put there by the initializer, and that is the slot it
+    // keeps — no instruction is emitted here at all, which is the whole saving
+    // over a global.
+    //
+    // `where` is only used if there are already too many locals to name in one
+    // byte.
+    void add_local(const std::string& name, const Token& where);
+
+    // which stack slot a name means, or -1 when it is not a local and the caller
+    // should fall back to a global.
+    //
+    // the search runs backwards, and that is what makes shadowing work: an inner
+    // `let x` was pushed after the outer one, so walking from the end finds the
+    // inner one first and stops. forwards would find the outer one and quietly
+    // read the wrong variable.
+    int resolve_local(const std::string& name) const;
+
     // put a variable's name in the pool and hand back the index, without emitting
     // anything. globals are addressed by name rather than by slot, so the three
     // global opcodes all need this index as their operand — but each of them
@@ -129,7 +155,30 @@ private:
     // token before emitting anything.
     void set_line(const Token& token);
 
+    // a local the compiler is keeping track of while it walks a block. name is
+    // what the source called it and depth is the scope it was declared in, which
+    // is all end_scope needs to decide what has gone out of scope.
+    struct Local {
+        std::string name;
+        int depth;
+    };
+
+    // a slot number is one byte, so 255 is the last one an instruction can name.
+    static constexpr std::size_t max_locals = 256;
+
     Chunk chunk_;
+
+    // every local in scope, innermost last, one entry per slot on the VM stack.
+    // the index into this vector *is* the slot number — which only holds because
+    // every statement leaves the stack the way it found it, so nothing else is
+    // ever parked below a local while the block is being compiled.
+    std::vector<Local> locals_;
+
+    // how many blocks deep we are. 0 is the top level, where a `let` is a global
+    // instead, since a name written there has to still be reachable from a
+    // function compiled somewhere else in the file.
+    int scope_depth_ = 0;
+
     // the line every emit right now gets recorded under. starts at 1 so a chunk
     // that somehow emits before any node is visited still has a sane line rather
     // than a zero the error reporter would have to special-case.

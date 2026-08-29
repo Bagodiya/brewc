@@ -303,6 +303,39 @@ InterpretResult VM::run(const Chunk& chunk) {
             break;
         }
 
+        case Opcode::GetLocal: {
+            std::size_t slot = read_byte(chunk);
+            if (slot >= stack_.size()) {
+                // the compiler only hands out a slot it counted onto the stack
+                // itself, so this is a hand-built chunk or one whose operand byte
+                // went astray. saying so beats reading past the vector.
+                return fail("local slot " + std::to_string(slot) + " is out of range", chunk);
+            }
+
+            // a copy onto the top, not a move out of the slot. the variable is
+            // still in scope and every later read wants to find it there — this
+            // is the difference between reading a local and consuming it.
+            push(stack_[slot]);
+            break;
+        }
+
+        case Opcode::SetLocal: {
+            std::size_t slot = read_byte(chunk);
+            if (slot >= stack_.size()) {
+                return fail("local slot " + std::to_string(slot) + " is out of range", chunk);
+            }
+
+            // peek and not pop, same as SetGlobal. assignment is an expression
+            // and its value is the value assigned, so it stays put for whatever
+            // is around it and the Pop comes from the enclosing statement.
+            //
+            // there is no undefined-variable check to make here. a slot number
+            // only exists because the compiler saw the declaration, so unlike a
+            // global there is no way to assign to a local that was never bound.
+            stack_[slot] = peek(0);
+            break;
+        }
+
         case Opcode::Pop:
             // whatever the statement in front of this left behind. nothing reads
             // the value on the way out, so it is dropped and not moved anywhere
