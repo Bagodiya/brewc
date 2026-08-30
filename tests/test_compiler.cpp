@@ -761,3 +761,135 @@ TEST_CASE("a compiler reused after a block starts at the top level again", "[com
 
     REQUIRE(op_at(chunk, 2) == Opcode::DefineGlobal);
 }
+
+TEST_CASE("an assignment compiles to the value then a store", "[compiler]") {
+    // Const 2, SetGlobal "a", and the Pop that belongs to the statement around
+    // it. the store comes last for the same reason an Add does — it works off
+    // what the value already left on the stack.
+    Chunk chunk = compile_source("let a = 1\na = 2");
+    REQUIRE(op_at(chunk, 4) == Opcode::Const);
+    REQUIRE(op_at(chunk, 6) == Opcode::SetGlobal);
+    REQUIRE(op_at(chunk, 8) == Opcode::Pop);
+}
+
+TEST_CASE("the store names the same pool entry the let bound", "[compiler]") {
+    // both instructions carry an index into the pool, and add_constant dedupes
+    // strings, so writing the name twice has to come back as the same byte. if it
+    // didn't the assignment would be reaching for a global nobody defined.
+    Chunk chunk = compile_source("let a = 1\na = 2");
+    REQUIRE(chunk.code[3] == chunk.code[7]);
+    REQUIRE(std::get<std::string>(chunk.constant_at(chunk.code[7])) == "a");
+}
+
+TEST_CASE("only one Pop comes out of an assignment statement", "[compiler]") {
+    // visit_assign emits no Pop of its own — the value is what the expression
+    // evaluates to. a second one here would eat whatever was under it.
+    Chunk chunk = compile_source("let a = 1\na = 2");
+    REQUIRE(chunk.size() == 10);
+    REQUIRE(op_at(chunk, 9) == Opcode::Return);
+}
+
+TEST_CASE("assigning to a local compiles to SetLocal and its slot", "[compiler]") {
+    Chunk chunk = compile_source("{ let x = 1 x = 2 }");
+    REQUIRE(op_at(chunk, 4) == Opcode::SetLocal);
+    REQUIRE(chunk.code[5] == 0);
+}
+
+TEST_CASE("a local target keeps its name out of the pool", "[compiler]") {
+    // same saving as reading one. only the two literals should be in there.
+    Chunk chunk = compile_source("{ let x = 1 x = 2 }");
+    REQUIRE(chunk.constants.size() == 2);
+}
+
+TEST_CASE("the second local gets the slot it was declared in", "[compiler]") {
+    // neither let emits a bind instruction, so the two Const pairs are all that
+    // comes before the value being assigned.
+    Chunk chunk = compile_source("{ let a = 1 let b = 2 b = 3 }");
+    REQUIRE(op_at(chunk, 4) == Opcode::Const);
+    REQUIRE(op_at(chunk, 6) == Opcode::SetLocal);
+    REQUIRE(chunk.code[7] == 1);
+}
+
+TEST_CASE("a local shadows a global on the left of an assignment too", "[compiler]") {
+    // resolve_local runs first here just like it does in visit_identifier, so
+    // the write goes to the slot. the other way round and a block would clobber
+    // the file's variable every time it assigned to its own.
+    Chunk chunk = compile_source("let x = 1\n{ let x = 2 x = 3 }");
+    REQUIRE(op_at(chunk, 8) == Opcode::SetLocal);
+}
+
+TEST_CASE("a name with no local of that name falls through to SetGlobal", "[compiler]") {
+    Chunk chunk = compile_source("let outer = 1\n{ outer = 2 }");
+    REQUIRE(op_at(chunk, 6) == Opcode::SetGlobal);
+}
+
+TEST_CASE("a chained assignment stores into both names", "[compiler]") {
+    // `a = b = 7` parses right to left, so the inner assignment is the outer
+    // one's value. it stores into b and leaves the 7 behind, which is then what
+    // the outer store writes into a.
+    Chunk chunk = compile_source("let a = 1\nlet b = 2\na = b = 7");
+    REQUIRE(op_at(chunk, 8) == Opcode::Const);
+    REQUIRE(op_at(chunk, 10) == Opcode::SetGlobal);
+    REQUIRE(std::get<std::string>(chunk.constant_at(chunk.code[11])) == "b");
+    REQUIRE(op_at(chunk, 12) == Opcode::SetGlobal);
+    REQUIRE(std::get<std::string>(chunk.constant_at(chunk.code[13])) == "a");
+}
+
+TEST_CASE("the store is stamped with the name's line and not the value's", "[compiler]") {
+    // same trap every other visitor has: the right-hand side moves line_ along
+    // as it compiles, so an assignment split over two lines would blame the
+    // wrong one if set_line didn't run before the emit.
+    Chunk chunk = compile_source("let a = 1\na =\n2");
+    REQUIRE(chunk.line_at(6) == 2);
+}
+
+TEST_CASE("an assignment writes over the global it names", "[compiler]") {
+    VM vm;
+    run_source(vm, "let a = 1\na = 2");
+    REQUIRE(std::get<int64_t>(*vm.global("a")) == 2);
+}
+
+TEST_CASE("the assigned value is still there for the expression around it", "[compiler]") {
+    // this is what makes the chain work. if visit_assign popped, b would be
+    // bound to whatever was underneath instead of to the 7.
+    VM vm;
+    run_source(vm, "let a = 1\nlet b = a = 7");
+    REQUIRE(std::get<int64_t>(*vm.global("a")) == 7);
+    REQUIRE(std::get<int64_t>(*vm.global("b")) == 7);
+}
+
+TEST_CASE("an assignment statement still balances the stack", "[compiler]") {
+    VM vm;
+    run_source(vm, "let a = 1\na = 2\na = a + 1");
+    REQUIRE(vm.stack_size() == 0);
+    REQUIRE(std::get<int64_t>(*vm.global("a")) == 3);
+}
+
+TEST_CASE("assigning a name nobody bound is a runtime error", "[compiler]") {
+    // not a definition. a typo on the left of an `=` should be caught, not turned
+    // into a second variable, and that is the rule Environment::assign follows in
+    // the tree-walker.
+    Chunk chunk = compile_source("nope = 1");
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(std::string(vm.error()->what()) == "undefined variable 'nope'");
+}
+
+TEST_CASE("assigning to a local leaves the global it shadows alone", "[compiler]") {
+    VM vm;
+    run_source(vm, "let x = 1\n{ let x = 2 x = 99 }");
+    REQUIRE(std::get<int64_t>(*vm.global("x")) == 1);
+}
+
+TEST_CASE("a local keeps the value assigned to it for the rest of the block", "[compiler]") {
+    // the slot is written in place, so the read after it finds the new value.
+    // going at it through an error again, since the local is gone by the time the
+    // block ends and there is nothing left to inspect from outside.
+    Chunk chunk = compile_source("{ let x = 1 x = \"hi\" x + 1 }");
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(std::string(vm.error()->what()) == "cannot apply '+' to string and int");
+}

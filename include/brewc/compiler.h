@@ -46,9 +46,9 @@ private:
 // convention every visit_* below follows is: whatever you compile, exactly one
 // value is on the stack afterwards.
 //
-// literals, arithmetic, comparisons, variables, blocks and expression statements
-// are wired up so far. the rest of the visit_* bodies are still stubs and get
-// filled in one at a time over the next steps.
+// literals, arithmetic, comparisons, variables, assignment, blocks and expression
+// statements are wired up so far. the rest of the visit_* bodies are still stubs
+// and get filled in one at a time over the next steps.
 class Compiler : public Visitor, public StmtVisitor {
 public:
     Compiler();

@@ -368,6 +368,39 @@ void Compiler::visit_identifier(IdentifierExpr& expr) {
     emit(Opcode::GetGlobal, name_constant(expr.name, expr.token));
 }
 
+// `x = 5`. the value is compiled first, then one instruction that writes it into
+// wherever the name lives — the same two-way split visit_identifier makes when it
+// reads a name back, and for the same reason. a local is a slot number the
+// compiler already knows, a global is a name the VM looks up while it runs.
+//
+// no Pop here, and that is the difference between this and visit_let. assignment
+// is an expression, so its value has to stay on the stack for whatever is around
+// it: `a = b = 7` compiles the inner assignment as the outer one's value, so the
+// 7 the inner SetGlobal leaves behind is exactly what the outer one stores. the
+// Pop that balances a statement comes from visit_expr_stmt, once, at the end.
+//
+// nothing checks that the name was ever bound. for a local it cannot come up —
+// resolve_local only answers with a slot it saw declared — and for a global the
+// compiler has no way to know, since a name can be bound further down the file
+// than the code assigning to it. so SetGlobal is the one that complains at run
+// time, which is where Environment::assign complains in the tree-walker too.
+void Compiler::visit_assign(AssignExpr& expr) {
+    compile_expr(*expr.value);
+
+    // the value left line_ at the end of whatever it was, same trap as
+    // everywhere else. put the name's line back so the store blames the
+    // assignment and not the tail of a long right-hand side.
+    set_line(expr.token);
+
+    int slot = resolve_local(expr.name);
+    if (slot >= 0) {
+        emit(Opcode::SetLocal, static_cast<uint8_t>(slot));
+        return;
+    }
+
+    emit(Opcode::SetGlobal, name_constant(expr.name, expr.token));
+}
+
 // `let x = expr` compiles the initializer first, so the value it wants to bind is
 // sitting on top when DefineGlobal runs, and then names it. the order is forced:
 // the instruction takes the value off the stack, so nothing can be bound before
@@ -458,8 +491,6 @@ void Compiler::visit_block(BlockStmt& stmt) {
 // from the signatures, which would make the diffs in those steps harder to read.
 
 void Compiler::visit_call(CallExpr& expr) { (void)expr; }
-
-void Compiler::visit_assign(AssignExpr& expr) { (void)expr; }
 
 void Compiler::visit_if(IfStmt& stmt) { (void)stmt; }
 
