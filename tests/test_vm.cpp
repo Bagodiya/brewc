@@ -49,6 +49,15 @@ void write_local(Chunk& chunk, Opcode op, uint8_t slot, int line = 1) {
     chunk.write(slot, line);
 }
 
+// a jump and its two operand bytes, high byte first. the distance is counted
+// from the instruction after this one, which is the part that is easy to be off
+// by three on when writing the bytes out by hand.
+void write_jump(Chunk& chunk, Opcode op, uint16_t distance, int line = 1) {
+    chunk.write(op, line);
+    chunk.write(static_cast<uint8_t>((distance >> 8) & 0xff), line);
+    chunk.write(static_cast<uint8_t>(distance & 0xff), line);
+}
+
 } // namespace
 
 TEST_CASE("an empty chunk stops right away", "[vm]") {
@@ -1142,4 +1151,168 @@ TEST_CASE("a local and a global with the same name are two different things", "[
     VM vm;
     REQUIRE(vm.run(chunk) == InterpretResult::Ok);
     REQUIRE(std::get<int64_t>(*vm.global("x")) == 1);
+}
+
+TEST_CASE("Nil pushes nil without touching the pool", "[vm]") {
+    Chunk chunk;
+    chunk.write(Opcode::Nil, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::holds_alternative<Nil>(vm.stack_top()));
+    REQUIRE(chunk.constants.empty());
+}
+
+TEST_CASE("True and False push the bools they name", "[vm]") {
+    Chunk chunk;
+    chunk.write(Opcode::True, 1);
+    chunk.write(Opcode::False, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 2);
+    REQUIRE(std::get<bool>(vm.stack_top()) == false);
+}
+
+TEST_CASE("Jump skips the instructions it covers", "[vm]") {
+    // three bytes for the jump, so counting 2 forward from offset 3 lands on the
+    // second Const and the first one never runs.
+    Chunk chunk;
+    write_jump(chunk, Opcode::Jump, 2);
+    write_constant(chunk, int64_t{1});
+    write_constant(chunk, int64_t{2});
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 2);
+}
+
+TEST_CASE("a Jump of zero carries on with the next instruction", "[vm]") {
+    Chunk chunk;
+    write_jump(chunk, Opcode::Jump, 0);
+    write_constant(chunk, int64_t{7});
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 7);
+}
+
+TEST_CASE("JumpIfFalse takes the jump on a false condition", "[vm]") {
+    Chunk chunk;
+    chunk.write(Opcode::False, 1);
+    write_jump(chunk, Opcode::JumpIfFalse, 2);
+    write_constant(chunk, int64_t{1});
+    write_constant(chunk, int64_t{2});
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 2);
+}
+
+TEST_CASE("JumpIfFalse falls through on a true condition", "[vm]") {
+    Chunk chunk;
+    chunk.write(Opcode::True, 1);
+    write_jump(chunk, Opcode::JumpIfFalse, 2);
+    write_constant(chunk, int64_t{1});
+    write_constant(chunk, int64_t{2});
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 2);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 2);
+}
+
+TEST_CASE("JumpIfFalse takes the condition off whichever way it went", "[vm]") {
+    // an if would grow the stack by one every time it ran otherwise, and a while
+    // loop in the next step runs one over and over.
+    Chunk taken;
+    taken.write(Opcode::False, 1);
+    write_jump(taken, Opcode::JumpIfFalse, 0);
+
+    VM vm;
+    REQUIRE(vm.run(taken) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 0);
+
+    Chunk skipped;
+    skipped.write(Opcode::True, 1);
+    write_jump(skipped, Opcode::JumpIfFalse, 0);
+
+    REQUIRE(vm.run(skipped) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("JumpIfFalse uses the same truthiness as everything else", "[vm]") {
+    // only nil and false are falsy, so a 0 condition does not take the jump.
+    Chunk chunk;
+    write_constant(chunk, int64_t{0});
+    write_jump(chunk, Opcode::JumpIfFalse, 3);
+    write_constant(chunk, std::string("ran"));
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<std::string>(vm.stack_top()) == "ran");
+}
+
+TEST_CASE("nil is falsy, so the jump is taken", "[vm]") {
+    Chunk chunk;
+    chunk.write(Opcode::Nil, 1);
+    write_jump(chunk, Opcode::JumpIfFalse, 2);
+    write_constant(chunk, std::string("skipped"));
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("both operand bytes count towards the distance", "[vm]") {
+    // 0x01 0x00 is 256, which one byte could not have said. the padding is there
+    // so the jump has somewhere real to land.
+    Chunk chunk;
+    write_jump(chunk, Opcode::Jump, 256);
+    for (int i = 0; i < 256; ++i) {
+        chunk.write(Opcode::True, 1);
+    }
+    write_constant(chunk, int64_t{9});
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 9);
+}
+
+TEST_CASE("a jump landing on the end of the chunk just stops", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{4});
+    write_jump(chunk, Opcode::Jump, 0);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 4);
+}
+
+TEST_CASE("a jump past the end of the chunk is reported", "[vm]") {
+    // an unpatched jump reads back as 0xffff, which is why the placeholder is
+    // that and not zero — this stops instead of running the branch it was
+    // supposed to skip.
+    Chunk chunk;
+    write_jump(chunk, Opcode::Jump, 0xffff, 6);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(std::string(vm.error()->what()) == "jump target 65538 is outside the chunk");
+    REQUIRE(vm.error()->line() == 6);
+}
+
+TEST_CASE("a JumpIfFalse that lands nowhere is caught the same way", "[vm]") {
+    Chunk chunk;
+    chunk.write(Opcode::False, 1);
+    write_jump(chunk, Opcode::JumpIfFalse, 500);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.stack_size() == 0);
 }

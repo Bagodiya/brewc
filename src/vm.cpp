@@ -175,6 +175,22 @@ InterpretResult VM::run(const Chunk& chunk) {
             break;
         }
 
+        case Opcode::Nil:
+            push(Nil{});
+            break;
+
+        case Opcode::True:
+            push(true);
+            break;
+
+        case Opcode::False:
+            // no pool entry and no operand byte. these three values never change,
+            // so an opcode each is both smaller and faster than a Const pointing
+            // at a slot that holds the same thing every time — which is why
+            // visit_literal has emitted them since step 65.
+            push(false);
+            break;
+
         case Opcode::Add:
         case Opcode::Sub:
         case Opcode::Mul:
@@ -349,6 +365,41 @@ InterpretResult VM::run(const Chunk& chunk) {
             pop();
             break;
 
+        case Opcode::Jump:
+        case Opcode::JumpIfFalse: {
+            // read the operand before anything else, whether or not the jump
+            // ends up being taken. the two bytes are part of the instruction, so
+            // falling through without reading them would leave ip_ pointing at
+            // half an offset and the VM would run it as an opcode.
+            std::size_t distance = read_short(chunk);
+
+            if (op == Opcode::JumpIfFalse) {
+                // the condition comes off either way. the expression in front of
+                // this instruction pushed it and nothing further along is going
+                // to clear it, so leaving it behind when the branch is taken
+                // would grow the stack by one for every if the program runs.
+                //
+                // same truthiness the tree-walker uses, so `if 0` runs its branch
+                // and only nil and false skip it.
+                if (is_truthy(pop())) {
+                    break;
+                }
+            }
+
+            std::size_t target = ip_ + distance;
+            if (target > chunk.size()) {
+                // the compiler patches every jump it writes to a spot inside the
+                // chunk, so this is a hand-built chunk or one whose operand went
+                // astray — including a jump that was emitted and never patched,
+                // which is why the placeholder is 0xffff. landing exactly on the
+                // end is allowed and just stops the run.
+                return fail("jump target " + std::to_string(target) + " is outside the chunk",
+                            chunk);
+            }
+            ip_ = target;
+            break;
+        }
+
         case Opcode::Return:
             // step 83 makes this hand a value back to the caller of a function.
             // at the top level there is no caller, so it just stops, and stopping
@@ -427,6 +478,15 @@ uint8_t VM::read_byte(const Chunk& chunk) {
         return 0;
     }
     return chunk.code[ip_++];
+}
+
+uint16_t VM::read_short(const Chunk& chunk) {
+    // high byte first, matching the order the compiler writes them in. reading
+    // them the other way round still gives a number, which is what makes this
+    // worth stating: a jump would land somewhere plausible instead of failing.
+    uint8_t high = read_byte(chunk);
+    uint8_t low = read_byte(chunk);
+    return static_cast<uint16_t>((static_cast<uint16_t>(high) << 8) | low);
 }
 
 void VM::push(Value value) { stack_.push_back(std::move(value)); }

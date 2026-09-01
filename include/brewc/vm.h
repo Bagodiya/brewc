@@ -34,10 +34,10 @@ enum class InterpretResult {
 // emits left before right, and why every visit_* in it leaves exactly one value
 // behind — the two halves only fit together if both sides keep that promise.
 //
-// Const, Return, Pop, the arithmetic opcodes, the comparisons, the globals and the
-// locals are implemented here. the rest stop the run with a RuntimeError instead
-// of falling through to something worse, and get filled in one group at a time
-// over the next steps.
+// Const, Nil, True, False, Return, Pop, the arithmetic opcodes, the comparisons,
+// the globals, the locals and the two forward jumps are implemented here. the rest stop the run
+// with a RuntimeError instead of falling through to something worse, and get
+// filled in one group at a time over the next steps.
 class VM {
 public:
     VM();
@@ -92,6 +92,11 @@ private:
     // marking where one ends.
     uint8_t read_byte(const Chunk& chunk);
 
+    // the next two bytes as one number, high byte first. only the jumps carry an
+    // operand this wide — one byte would cap a branch at 255 bytes of code, which
+    // is a couple of dozen statements and nowhere near enough.
+    uint16_t read_short(const Chunk& chunk);
+
     void push(Value value);
 
     // take the top value off. the arithmetic opcodes pop their operands and push
@@ -102,8 +107,7 @@ private:
     // look at a value without removing it. distance 0 is the top, 1 the one under
     // it. the two store opcodes are what want this: an assignment has to leave
     // its value on the stack for whatever is around it, so it reads the top
-    // without consuming it. the jumps in step 78 need the same thing for a
-    // condition they are not allowed to eat.
+    // without consuming it.
     const Value& peek(std::size_t distance) const;
 
     std::vector<Value> stack_;
@@ -124,9 +128,9 @@ private:
     // where the next instruction starts, as an offset into chunk.code. an index
     // and not a pointer on purpose: a pointer into the vector's buffer is only
     // good until something makes that vector reallocate, and an offset survives
-    // it. nothing reallocates a chunk mid-run today, but the jumps in step 78
-    // work in offsets anyway, so a pointer would have to be converted back at
-    // every one of them.
+    // it. nothing reallocates a chunk mid-run today, but the jumps work in
+    // offsets anyway, so a pointer would have to be converted back at every one
+    // of them.
     std::size_t ip_ = 0;
 
     // set by fail(), cleared at the top of every run. empty is the normal state,

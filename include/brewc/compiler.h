@@ -46,9 +46,9 @@ private:
 // convention every visit_* below follows is: whatever you compile, exactly one
 // value is on the stack afterwards.
 //
-// literals, arithmetic, comparisons, variables, assignment, blocks and expression
-// statements are wired up so far. the rest of the visit_* bodies are still stubs
-// and get filled in one at a time over the next steps.
+// literals, arithmetic, comparisons, variables, assignment, blocks, expression
+// statements and if/else are wired up so far. the rest of the visit_* bodies are
+// still stubs and get filled in one at a time over the next steps.
 class Compiler : public Visitor, public StmtVisitor {
 public:
     Compiler();
@@ -105,6 +105,19 @@ private:
     // to reach.
     void emit_byte(uint8_t byte);
 
+    // write a jump instruction with a placeholder operand and hand back the
+    // offset that operand starts at, so patch_jump can find it again.
+    //
+    // the distance can't be filled in here. a forward jump goes over code that
+    // hasn't been compiled yet, so nobody knows how long that code is until the
+    // other end is reached — which is the entire reason this is two calls
+    // instead of one.
+    std::size_t emit_jump(Opcode op);
+
+    // fill in the distance of a jump written earlier, now that the place it has
+    // to land is wherever the chunk currently ends.
+    void patch_jump(std::size_t offset);
+
     // put a value in the chunk's pool and emit the Const that pushes it. `where`
     // is only used if the pool is already full, in which case the compile stops
     // and points at that token. the check lives here rather than at the call
@@ -150,6 +163,13 @@ private:
     // the same way the parser does it. always throws.
     [[noreturn]] void fail(const std::string& message, const Token& where);
 
+    // the same thing when there is no token to point at. patch_jump is the only
+    // caller: it runs long after the node that started the jump was left behind,
+    // and all it has is the line the chunk recorded against the instruction.
+    // column 0 means "not measured", and with_location leaves it out rather than
+    // printing a number nobody worked out.
+    [[noreturn]] void fail(const std::string& message, int line, int column);
+
     // remember which source line the node being compiled came from, so the
     // instructions it emits get stamped with it. a visit_* sets this from its own
     // token before emitting anything.
@@ -165,6 +185,11 @@ private:
 
     // a slot number is one byte, so 255 is the last one an instruction can name.
     static constexpr std::size_t max_locals = 256;
+
+    // a jump carries two bytes, so this is the furthest one can reach. it is a
+    // limit of the encoding and not of the language, which is why going past it
+    // is a CompileError with a line on it rather than an assert.
+    static constexpr std::size_t max_jump = 65535;
 
     Chunk chunk_;
 

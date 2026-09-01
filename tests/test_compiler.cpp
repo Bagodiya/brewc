@@ -10,6 +10,7 @@
 #include "brewc/ast.h"
 #include "brewc/chunk.h"
 #include "brewc/compiler.h"
+#include "brewc/disassembler.h"
 #include "brewc/lexer.h"
 #include "brewc/parser.h"
 #include "brewc/token.h"
@@ -82,6 +83,28 @@ Chunk compile_expr_source(const std::string& source) {
     return compiler.compile_expression(*expr);
 }
 
+// how many bytes the instruction at this offset takes up. a test that wants to
+// walk the whole stream has to know, since an operand byte read as an opcode is
+// how a scan starts reporting instructions nobody emitted.
+std::size_t instruction_size(const Chunk& chunk, std::size_t offset) {
+    switch (static_cast<Opcode>(chunk.code[offset])) {
+    case Opcode::Const:
+    case Opcode::DefineGlobal:
+    case Opcode::GetGlobal:
+    case Opcode::SetGlobal:
+    case Opcode::GetLocal:
+    case Opcode::SetLocal:
+    case Opcode::Call:
+        return 2;
+    case Opcode::Jump:
+    case Opcode::JumpIfFalse:
+    case Opcode::Loop:
+        return 3;
+    default:
+        return 1;
+    }
+}
+
 // compile a whole program and run it. everything else in this file reads the
 // bytes back, but a Pop is only worth anything for what the stack looks like when
 // the program finishes, and the chunk on its own can't show that.
@@ -112,11 +135,10 @@ TEST_CASE("a fresh chunk starts with an empty constant pool", "[compiler]") {
 }
 
 TEST_CASE("statements compile without the stubs blowing up", "[compiler]") {
-    // if, while and fn are still empty visitors, so nothing here reaches down
-    // into the statements inside them — the `let` in each body never gets
-    // compiled, and the block they wrap never opens a scope either. all this
-    // really checks is that the walk gets to every node and comes back.
-    REQUIRE(compile_source("if 1 < 2 { let y = 3 }").size() == 1);
+    // while and fn are still empty visitors, so nothing here reaches down into
+    // the statements inside them — the `let` in each body never gets compiled,
+    // and the block they wrap never opens a scope either. all this really checks
+    // is that the walk gets to every node and comes back.
     REQUIRE(compile_source("while 1 { let z = 2 }").size() == 1);
     REQUIRE(compile_source("fn add(a, b) { let c = a + b }").size() == 1);
 }
@@ -447,6 +469,14 @@ TEST_CASE("a compile error says which line and column it came from", "[compiler]
     REQUIRE(err.line() == 4);
     REQUIRE(err.column() == 9);
     REQUIRE(std::string(err.what()) == "line 4:9: too many constants in one chunk");
+}
+
+TEST_CASE("a compile error with no column names only the line", "[compiler]") {
+    // patch_jump is the one place with nothing to point at but the line the
+    // chunk recorded. printing ":0" would look like a real column and send
+    // whoever read it to the wrong place.
+    CompileError err(4, 0, "too much code to jump over");
+    REQUIRE(std::string(err.what()) == "line 4: too much code to jump over");
 }
 
 TEST_CASE("a let compiles its initializer and then binds the name", "[compiler]") {
@@ -892,4 +922,149 @@ TEST_CASE("a local keeps the value assigned to it for the rest of the block", "[
     VM vm;
     REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
     REQUIRE(std::string(vm.error()->what()) == "cannot apply '+' to string and int");
+}
+
+TEST_CASE("an if with no else jumps over the then branch", "[compiler]") {
+    // Const 1, Const 2, Less, then the jump. the branch is a block holding one
+    // `let`, which at depth 1 is a local: the Const that runs its initializer is
+    // the whole of it, and the Pop is end_scope taking the slot back.
+    Chunk chunk = compile_source("if 1 < 2 { let y = 3 }");
+    REQUIRE(op_at(chunk, 4) == Opcode::Less);
+    REQUIRE(op_at(chunk, 5) == Opcode::JumpIfFalse);
+    REQUIRE(op_at(chunk, 8) == Opcode::Const);
+    REQUIRE(op_at(chunk, 10) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 11) == Opcode::Return);
+}
+
+TEST_CASE("the patched distance lands past the end of the then branch", "[compiler]") {
+    // measured from the instruction after the jump, so 8 + 3 is the Return.
+    Chunk chunk = compile_source("if 1 < 2 { let y = 3 }");
+    std::size_t distance = (static_cast<std::size_t>(chunk.code[6]) << 8) | chunk.code[7];
+    REQUIRE(8 + distance == 11);
+}
+
+TEST_CASE("nothing pops the condition, the jump does it", "[compiler]") {
+    // the condition is the only thing an if pushes and JumpIfFalse is the only
+    // thing that takes it off. an extra Pop here would eat whatever was under it
+    // on the branch that skips.
+    Chunk chunk = compile_source("if 1 < 2 { let y = 3 }");
+    for (std::size_t i = 0; i < chunk.size(); ++i) {
+        if (op_at(chunk, i) == Opcode::JumpIfFalse) {
+            REQUIRE(op_at(chunk, i + 3) != Opcode::Pop);
+        }
+    }
+}
+
+TEST_CASE("an if with an else steps over it on the way out", "[compiler]") {
+    // the false side lands on the first instruction of the else branch, and the
+    // true side has to jump past that branch or it would run both halves.
+    Chunk chunk = compile_source("if 1 { 2 } else { 3 }");
+    REQUIRE(op_at(chunk, 2) == Opcode::JumpIfFalse);
+    REQUIRE(op_at(chunk, 8) == Opcode::Jump);
+    REQUIRE(op_at(chunk, 11) == Opcode::Const);
+    REQUIRE(op_at(chunk, 14) == Opcode::Return);
+
+    std::size_t to_else = (static_cast<std::size_t>(chunk.code[3]) << 8) | chunk.code[4];
+    REQUIRE(5 + to_else == 11);
+
+    std::size_t past_else = (static_cast<std::size_t>(chunk.code[9]) << 8) | chunk.code[10];
+    REQUIRE(11 + past_else == 14);
+}
+
+TEST_CASE("an else if is just another if hanging off the else", "[compiler]") {
+    // the parser nests the second one, so compiling the else branch walks
+    // straight back into visit_if and there is a JumpIfFalse per condition.
+    Chunk chunk = compile_source("if 1 { 2 } else if 3 { 4 } else { 5 }");
+
+    int conditions = 0;
+    std::size_t offset = 0;
+    while (offset < chunk.size()) {
+        if (op_at(chunk, offset) == Opcode::JumpIfFalse) {
+            ++conditions;
+        }
+        offset += instruction_size(chunk, offset);
+    }
+    REQUIRE(conditions == 2);
+}
+
+TEST_CASE("a branch is its own scope", "[compiler]") {
+    // the `let` inside the braces is a local and not a global, same as any other
+    // block, so nothing goes in the pool and the slot is dropped on the way out.
+    Chunk chunk = compile_source("if 1 { let y = 2 }");
+    REQUIRE(chunk.constants.size() == 2);
+    for (std::size_t i = 0; i < chunk.size(); ++i) {
+        REQUIRE(op_at(chunk, i) != Opcode::DefineGlobal);
+    }
+}
+
+TEST_CASE("only the branch the condition picked runs", "[compiler]") {
+    VM vm;
+    run_source(vm, "let taken = 0\nif 1 < 2 { taken = 1 } else { taken = 2 }");
+    REQUIRE(std::get<int64_t>(*vm.global("taken")) == 1);
+}
+
+TEST_CASE("a false condition runs the else branch instead", "[compiler]") {
+    VM vm;
+    run_source(vm, "let taken = 0\nif 2 < 1 { taken = 1 } else { taken = 2 }");
+    REQUIRE(std::get<int64_t>(*vm.global("taken")) == 2);
+}
+
+TEST_CASE("an if with no else and a false condition does nothing", "[compiler]") {
+    VM vm;
+    run_source(vm, "let taken = 0\nif false { taken = 1 }");
+    REQUIRE(std::get<int64_t>(*vm.global("taken")) == 0);
+}
+
+TEST_CASE("an else if chain stops at the first condition that holds", "[compiler]") {
+    VM vm;
+    run_source(vm, "let n = 0\nif false { n = 1 } else if true { n = 2 } else { n = 3 }");
+    REQUIRE(std::get<int64_t>(*vm.global("n")) == 2);
+}
+
+TEST_CASE("the branch runs on the same truthiness the tree-walker uses", "[compiler]") {
+    // only nil and false are falsy, so `if 0` runs its branch. worth pinning
+    // because it is the kind of rule the two backends could quietly disagree on.
+    VM vm;
+    run_source(vm, "let n = 0\nif 0 { n = 1 }\nif nil { n = n + 10 }");
+    REQUIRE(std::get<int64_t>(*vm.global("n")) == 1);
+}
+
+TEST_CASE("an if statement leaves the stack the way it found it", "[compiler]") {
+    // the condition goes on and JumpIfFalse takes it off, whichever way the
+    // branch went. a while loop in the next step runs this over and over, so one
+    // value left behind per pass would grow the stack with the iteration count.
+    VM vm;
+    run_source(vm, "let n = 1\nif n { n = 2 }\nif false { n = 3 } else { n = 4 }");
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("ifs nest without the inner jumps disturbing the outer ones", "[compiler]") {
+    VM vm;
+    run_source(vm, "let n = 0\nif true { if false { n = 1 } else { n = 2 } }");
+    REQUIRE(std::get<int64_t>(*vm.global("n")) == 2);
+}
+
+TEST_CASE("the disassembler shows where a compiled jump lands", "[compiler]") {
+    // the whole reason the operand gets printed with its target: reading the
+    // distance out of a dump and adding it by hand is exactly the arithmetic
+    // that goes wrong.
+    Chunk chunk = compile_source("if 1 { 2 }");
+    std::string out = disassemble(chunk, "if");
+    REQUIRE(out.find("JumpIfFalse") != std::string::npos);
+    REQUIRE(out.find("-> 8") != std::string::npos);
+}
+
+TEST_CASE("a branch too long to jump over is a compile error", "[compiler]") {
+    // the operand is two bytes, so a then branch past 65535 bytes of code cannot
+    // be described. writing the low half anyway would land the jump somewhere in
+    // the middle of the branch.
+    std::string source = "if 1 {\n";
+    for (int i = 0; i < 25000; ++i) {
+        // three bytes each: Const, its pool index, and the Pop from the
+        // expression statement. the 1 is only in the pool once.
+        source += "1\n";
+    }
+    source += "}";
+
+    REQUIRE_THROWS_AS(compile_source(source), CompileError);
 }

@@ -13,6 +13,14 @@ namespace {
 // don't share a base class, but a user reading the output shouldn't be able to
 // tell which pass complained from the shape of the message.
 std::string with_location(int line, int column, const std::string& message) {
+    // column 0 is the "nobody measured it" case, and every caller that has a
+    // token passes a real one. printing ":0" would read like a real position and
+    // send whoever is looking at it to the start of the line for no reason, so
+    // the line alone is all that goes out. source_snippet treats column 0 the
+    // same way.
+    if (column <= 0) {
+        return "line " + std::to_string(line) + ": " + message;
+    }
     return "line " + std::to_string(line) + ":" + std::to_string(column) + ": " + message;
 }
 
@@ -156,6 +164,44 @@ void Compiler::emit(Opcode op, uint8_t operand) {
 
 void Compiler::emit_byte(uint8_t byte) { chunk_.write(byte, line_); }
 
+std::size_t Compiler::emit_jump(Opcode op) {
+    emit(op);
+
+    // two bytes of placeholder. 0xff rather than 0 on purpose: a jump that never
+    // got patched then reads back as the longest distance there is, which sends
+    // the VM past the end of the chunk and stops it, instead of a 0 that looks
+    // exactly like an ordinary jump to the next instruction and quietly runs the
+    // branch it was supposed to skip.
+    emit_byte(0xff);
+    emit_byte(0xff);
+
+    // the operand, not the opcode. patch_jump writes over these two bytes and
+    // has no reason to look at the instruction in front of them.
+    return chunk_.size() - 2;
+}
+
+void Compiler::patch_jump(std::size_t offset) {
+    // counted from the end of the jump instruction, since that is where ip_ is
+    // sitting by the time the VM has read both operand bytes. a distance and not
+    // an address, so the same three bytes still mean the same thing if the whole
+    // chunk ends up somewhere else.
+    std::size_t distance = chunk_.size() - offset - 2;
+
+    if (distance > max_jump) {
+        // takes a whole lot of source to hit, but the encoding cannot say it and
+        // silently writing the low two bytes would land the jump in the middle of
+        // the branch instead of past it.
+        fail("too much code to jump over (max " + std::to_string(max_jump) + " bytes)",
+             chunk_.line_at(offset), 0);
+    }
+
+    // high byte first. that is the wrong order for the machine this runs on, but
+    // the disassembler reads it back the same way and writing the number down the
+    // way it is spelled is one less thing to get backwards.
+    chunk_.code[offset] = static_cast<uint8_t>((distance >> 8) & 0xff);
+    chunk_.code[offset + 1] = static_cast<uint8_t>(distance & 0xff);
+}
+
 void Compiler::emit_constant(Value value, const Token& where) {
     std::size_t index = chunk_.add_constant(std::move(value));
     if (index >= Chunk::max_constants) {
@@ -220,6 +266,10 @@ int Compiler::resolve_local(const std::string& name) const {
 
 void Compiler::fail(const std::string& message, const Token& where) {
     throw CompileError(where.line, where.column, message);
+}
+
+void Compiler::fail(const std::string& message, int line, int column) {
+    throw CompileError(line, column, message);
 }
 
 void Compiler::set_line(const Token& token) { line_ = token.line; }
@@ -486,13 +536,56 @@ void Compiler::visit_block(BlockStmt& stmt) {
     end_scope();
 }
 
+// `if cond { ... } else { ... }`. the condition compiles like any other
+// expression and leaves one value on the stack, and then a JumpIfFalse decides
+// whether the next stretch of instructions runs at all.
+//
+// the distance that jump has to cover is unknown at the point it gets written —
+// the then branch has not been compiled, so nobody can say yet how many bytes it
+// takes. so the instruction goes down with a hole in it and the hole is filled in
+// once the far end is reached. that two-pass shape is the whole of forward jumps
+// and every one below works the same way.
+//
+// JumpIfFalse takes the condition off the stack itself, taken or not, so there
+// are no Pops to write here. that also means an `if` balances the stack the way
+// every other statement does: the condition was the one thing pushed and the one
+// thing removed.
+//
+// `else if` needs nothing special. the parser hangs the second `if` off the first
+// one's else branch, so compiling that branch walks straight back into here and
+// the chain comes out as nested jumps.
+void Compiler::visit_if(IfStmt& stmt) {
+    compile_expr(*stmt.condition);
+
+    std::size_t skip_then = emit_jump(Opcode::JumpIfFalse);
+    compile_stmt(*stmt.then_branch);
+
+    // with nothing on the else side there is only the one jump, and it lands
+    // straight after the then branch.
+    if (!stmt.else_branch) {
+        patch_jump(skip_then);
+        return;
+    }
+
+    // the then branch has to step over the else branch on its way out, or a true
+    // condition would run both halves one after the other. this is why an if
+    // with an else needs a second jump and an if without one does not.
+    std::size_t skip_else = emit_jump(Opcode::Jump);
+
+    // the false case lands here, which is the first instruction of the else
+    // branch. patching before compiling it is deliberate — the distance is
+    // measured to where the chunk ends right now, and one more statement in
+    // between would move it.
+    patch_jump(skip_then);
+    compile_stmt(*stmt.else_branch);
+    patch_jump(skip_else);
+}
+
 // everything below is a stub until the step that fills it in. the parameters are
 // cast to void so -Wunused-parameter stays quiet without the names disappearing
 // from the signatures, which would make the diffs in those steps harder to read.
 
 void Compiler::visit_call(CallExpr& expr) { (void)expr; }
-
-void Compiler::visit_if(IfStmt& stmt) { (void)stmt; }
 
 void Compiler::visit_while(WhileStmt& stmt) { (void)stmt; }
 
