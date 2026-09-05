@@ -455,13 +455,17 @@ TEST_CASE("a prefix operator with no meaning is reported", "[compiler]") {
     REQUIRE_THROWS_AS(compiler.compile_expression(expr), CompileError);
 }
 
-TEST_CASE("an operator with no opcode yet is reported, not skipped", "[compiler]") {
-    // && and || can't be a plain instruction — they short-circuit, which needs a
-    // jump over the right operand, and jumps aren't in yet. until then they have
-    // to fail loudly: emitting the operands and no operator would leave two
-    // values on the stack and the VM would carry on with the wrong one.
-    REQUIRE_THROWS_AS(compile_expr_source("1 && 2"), CompileError);
-    REQUIRE_THROWS_AS(compile_expr_source("1 || 2"), CompileError);
+TEST_CASE("an operator with no opcode is reported, not skipped", "[compiler]") {
+    // there is no token kind left that the parser builds a BinaryExpr for and
+    // visit_binary has nothing for, so this one gets built by hand. it stands in
+    // for someone adding an operator to the parser and forgetting this switch —
+    // emitting the operands and no operator would leave two values on the stack
+    // and the VM would carry on with the wrong one.
+    Compiler compiler;
+    BinaryExpr expr(std::make_unique<LiteralExpr>(Token(TokenKind::Integer, "1", 1, 1)),
+                    Token(TokenKind::Comma, ",", 1, 3),
+                    std::make_unique<LiteralExpr>(Token(TokenKind::Integer, "2", 1, 5)));
+    REQUIRE_THROWS_AS(compiler.compile_expression(expr), CompileError);
 }
 
 TEST_CASE("a compile error says which line and column it came from", "[compiler]") {
@@ -1067,4 +1071,145 @@ TEST_CASE("a branch too long to jump over is a compile error", "[compiler]") {
     source += "}";
 
     REQUIRE_THROWS_AS(compile_source(source), CompileError);
+}
+
+TEST_CASE("&& jumps over the right operand and pushes false instead", "[compiler]") {
+    // False, the jump, then the right side and the two Nots that make it a bool,
+    // a Jump past the short-circuit answer, and that answer.
+    Chunk chunk = compile_expr_source("false && true");
+    REQUIRE(op_at(chunk, 0) == Opcode::False);
+    REQUIRE(op_at(chunk, 1) == Opcode::JumpIfFalse);
+    REQUIRE(op_at(chunk, 4) == Opcode::True);
+    REQUIRE(op_at(chunk, 5) == Opcode::Not);
+    REQUIRE(op_at(chunk, 6) == Opcode::Not);
+    REQUIRE(op_at(chunk, 7) == Opcode::Jump);
+    REQUIRE(op_at(chunk, 10) == Opcode::False);
+    REQUIRE(op_at(chunk, 11) == Opcode::Return);
+
+    // the falsy path lands on that False and skips everything in between.
+    std::size_t to_false = (static_cast<std::size_t>(chunk.code[2]) << 8) | chunk.code[3];
+    REQUIRE(4 + to_false == 10);
+}
+
+TEST_CASE("|| is the same shape with the two sides swapped", "[compiler]") {
+    // a true left operand settles ||, so this time it's the fall-through that
+    // pushes the answer and the jump that leads to the right operand.
+    Chunk chunk = compile_expr_source("false || true");
+    REQUIRE(op_at(chunk, 1) == Opcode::JumpIfFalse);
+    REQUIRE(op_at(chunk, 4) == Opcode::True);
+    REQUIRE(op_at(chunk, 5) == Opcode::Jump);
+    REQUIRE(op_at(chunk, 8) == Opcode::True);
+    REQUIRE(op_at(chunk, 9) == Opcode::Not);
+    REQUIRE(op_at(chunk, 11) == Opcode::Return);
+
+    std::size_t to_right = (static_cast<std::size_t>(chunk.code[2]) << 8) | chunk.code[3];
+    REQUIRE(4 + to_right == 8);
+}
+
+TEST_CASE("neither operator emits an instruction of its own", "[compiler]") {
+    // there is no And or Or opcode and there shouldn't be one — if this starts
+    // failing it means someone added a plain instruction and lost the
+    // short-circuit with it.
+    for (const std::string& source : {std::string("true && false"), std::string("true || false")}) {
+        Chunk chunk = compile_expr_source(source);
+        std::size_t jumps = 0;
+        std::size_t offset = 0;
+        while (offset < chunk.size()) {
+            Opcode op = op_at(chunk, offset);
+            if (op == Opcode::Jump || op == Opcode::JumpIfFalse) {
+                ++jumps;
+            }
+            offset += instruction_size(chunk, offset);
+        }
+        REQUIRE(jumps == 2);
+    }
+}
+
+TEST_CASE("the jumps take the operator's line and not the operands'", "[compiler]") {
+    Chunk chunk = compile_expr_source("true\n&&\nfalse");
+    REQUIRE(chunk.line_at(1) == 2);
+}
+
+TEST_CASE("a false left operand keeps the right one from running at all", "[compiler]") {
+    // the test that actually proves the jump was taken: the divide would stop the
+    // VM if anything reached it.
+    VM vm;
+    run_source(vm, "let r = false && 1 / 0");
+    REQUIRE(std::get<bool>(*vm.global("r")) == false);
+}
+
+TEST_CASE("a true left operand does the same for ||", "[compiler]") {
+    VM vm;
+    run_source(vm, "let r = true || 1 / 0");
+    REQUIRE(std::get<bool>(*vm.global("r")) == true);
+}
+
+TEST_CASE("the skipped side isn't even looked up", "[compiler]") {
+    // `nope` is bound nowhere, so a GetGlobal reaching it would be an undefined
+    // variable error. same point as the divide, from the other direction.
+    VM vm;
+    run_source(vm, "let r = false && nope");
+    REQUIRE(std::get<bool>(*vm.global("r")) == false);
+}
+
+TEST_CASE("the right operand decides it when the left one doesn't", "[compiler]") {
+    VM vm;
+    run_source(vm, "let a = true && false\nlet b = false || true\nlet c = true && true");
+    REQUIRE(std::get<bool>(*vm.global("a")) == false);
+    REQUIRE(std::get<bool>(*vm.global("b")) == true);
+    REQUIRE(std::get<bool>(*vm.global("c")) == true);
+}
+
+TEST_CASE("the answer comes back as a bool and not as the operand", "[compiler]") {
+    // `1 && 2` is true, not 2, which is what the tree-walker says. the two Nots
+    // are the whole reason this holds.
+    VM vm;
+    run_source(vm, "let r = 1 && 2");
+    REQUIRE(std::holds_alternative<bool>(*vm.global("r")));
+    REQUIRE(std::get<bool>(*vm.global("r")) == true);
+}
+
+TEST_CASE("both operators use the same truthiness as everything else", "[compiler]") {
+    // only nil and false are falsy, so 0 counts as true here.
+    VM vm;
+    run_source(vm, "let a = 0 && true\nlet b = nil || false");
+    REQUIRE(std::get<bool>(*vm.global("a")) == true);
+    REQUIRE(std::get<bool>(*vm.global("b")) == false);
+}
+
+TEST_CASE("a logical expression leaves one value on the stack", "[compiler]") {
+    // whichever path it took. one branch pushes the operand's bool and the other
+    // pushes a literal, so a mismatch here would show up as drift over a loop.
+    Chunk chunk = compile_expr_source("false && true");
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+}
+
+TEST_CASE("&& binds tighter than || the way the parser nested them", "[compiler]") {
+    // `false && false` is the right operand of the ||, so the || answers with it
+    // and the whole thing is false. getting the nesting backwards gives true.
+    VM vm;
+    run_source(vm, "let r = false || false && false");
+    REQUIRE(std::get<bool>(*vm.global("r")) == false);
+}
+
+TEST_CASE("comparisons sit inside them without any bracketing", "[compiler]") {
+    // the case the short-circuit is really for: the second half is only safe
+    // because the first one guards it.
+    VM vm;
+    run_source(vm, "let n = 0\nlet r = n != 0 && 10 / n > 1");
+    REQUIRE(std::get<bool>(*vm.global("r")) == false);
+}
+
+TEST_CASE("they nest inside each other without the jumps crossing", "[compiler]") {
+    VM vm;
+    run_source(vm, "let r = (true && false) || (true && true)");
+    REQUIRE(std::get<bool>(*vm.global("r")) == true);
+}
+
+TEST_CASE("a logical operator works as an if condition", "[compiler]") {
+    VM vm;
+    run_source(vm, "let n = 0\nif 1 < 2 && 3 > 2 { n = 1 }");
+    REQUIRE(std::get<int64_t>(*vm.global("n")) == 1);
 }

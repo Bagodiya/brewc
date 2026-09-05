@@ -46,8 +46,8 @@ private:
 // convention every visit_* below follows is: whatever you compile, exactly one
 // value is on the stack afterwards.
 //
-// literals, arithmetic, comparisons, variables, assignment, blocks, expression
-// statements and if/else are wired up so far. the rest of the visit_* bodies are
+// literals, arithmetic, comparisons, logical operators, variables, assignment,
+// blocks, expression statements and if/else are wired up so far. the rest of the visit_* bodies are
 // still stubs and get filled in one at a time over the next steps.
 class Compiler : public Visitor, public StmtVisitor {
 public:
@@ -117,6 +117,12 @@ private:
     // fill in the distance of a jump written earlier, now that the place it has
     // to land is wherever the chunk currently ends.
     void patch_jump(std::size_t offset);
+
+    // `&&` and `||`. these get pulled out of visit_binary because they are the
+    // only operators that don't evaluate both sides — the right operand is jumped
+    // over when the left one already decides the answer, so there is no pair of
+    // values on the stack for a single instruction to work on.
+    void compile_logical(BinaryExpr& expr);
 
     // put a value in the chunk's pool and emit the Const that pushes it. `where`
     // is only used if the pool is already full, in which case the compile stops

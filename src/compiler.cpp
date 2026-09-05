@@ -45,9 +45,8 @@ Value literal_value(const Token& token) {
 }
 
 // the instruction an arithmetic operator compiles down to, or false if this
-// isn't one of them. comparisons are handled just below; && and || go through
-// the same visit_binary but fall out of both and are reported instead of
-// quietly emitting the wrong thing.
+// isn't one of them. comparisons are handled just below; && and || never reach
+// either table, since visit_binary sends them off to compile_logical first.
 bool arithmetic_opcode(TokenKind kind, Opcode& out) {
     switch (kind) {
     case TokenKind::Plus:
@@ -326,6 +325,15 @@ void Compiler::visit_literal(LiteralExpr& expr) {
 // back. the only difference is that <= and >= leave a Not behind them, and that
 // still ends with one value on the stack, so the rule holds either way.
 void Compiler::visit_binary(BinaryExpr& expr) {
+    // && and || come off here before either table is consulted, the same way
+    // Interpreter::visit_binary splits them off before it evaluates the operands.
+    // both tables describe an instruction that pops two values, and these two
+    // never put two values there in the first place.
+    if (expr.op.kind == TokenKind::AmpAmp || expr.op.kind == TokenKind::PipePipe) {
+        compile_logical(expr);
+        return;
+    }
+
     Opcode op;
     bool negate = false;
     if (!arithmetic_opcode(expr.op.kind, op) && !comparison_opcode(expr.op.kind, op, negate)) {
@@ -347,6 +355,78 @@ void Compiler::visit_binary(BinaryExpr& expr) {
     if (negate) {
         emit(Opcode::Not);
     }
+}
+
+// `a && b` and `a || b`. there are no And/Or opcodes and there shouldn't be: an
+// instruction can only run once both its operands are on the stack, and the
+// entire point of these two is that the right operand may never run at all. so
+// the work is done with jumps and the right side sits behind one.
+//
+// that's not an optimization, it's the semantics. `n != 0 && total / n > 1` is
+// only safe because the divide is genuinely unreachable when n is 0, and an
+// instruction that popped two values would have divided before it ever got the
+// chance to look at the left one.
+//
+// JumpIfFalse pops the condition whether or not it jumps (see visit_if), so the
+// short-circuit path has nothing left on the stack and has to push its own
+// answer — hence the True/False at the end of each shape. the plan's sketch
+// assumed the condition stuck around and a Pop was needed instead; it isn't.
+//
+// && compiles to:
+//
+//     <left>
+//     JumpIfFalse -> settled      left was falsy, answer is false
+//     <right>
+//     Not, Not                    whatever it gave back, as a bool
+//     Jump -> end
+//   settled:
+//     False
+//   end:
+//
+// and || is the same picture with the two sides of the jump swapped, since it's
+// a *true* left operand that settles the answer there.
+//
+// the two Nots look like a waste of a byte and they're the cheapest way to get
+// the types to line up: the tree-walker answers `1 && 2` with true rather than
+// with 2, so the right operand's value can't just be left sitting there. Not
+// runs the same is_truthy the branches do, so applying it twice is exactly the
+// bool conversion, and the peephole pass in Phase 6 is where a pair like that
+// gets noticed.
+void Compiler::compile_logical(BinaryExpr& expr) {
+    bool is_and = expr.op.kind == TokenKind::AmpAmp;
+
+    compile_expr(*expr.left);
+
+    // the left operand moved line_ along, and every jump below belongs to the
+    // operator rather than to either side of it.
+    set_line(expr.op);
+    std::size_t on_false = emit_jump(Opcode::JumpIfFalse);
+
+    if (is_and) {
+        compile_expr(*expr.right);
+        set_line(expr.op);
+        emit(Opcode::Not);
+        emit(Opcode::Not);
+    } else {
+        // the left side was true, so || is already done and the right side is
+        // skipped.
+        emit(Opcode::True);
+    }
+
+    std::size_t to_end = emit_jump(Opcode::Jump);
+    patch_jump(on_false);
+
+    if (is_and) {
+        // the left side was falsy, which settles && without running the right.
+        emit(Opcode::False);
+    } else {
+        compile_expr(*expr.right);
+        set_line(expr.op);
+        emit(Opcode::Not);
+        emit(Opcode::Not);
+    }
+
+    patch_jump(to_end);
 }
 
 // `-x` and `!done` are the binary case with one child instead of two: compile the
