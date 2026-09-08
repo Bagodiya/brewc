@@ -1316,3 +1316,76 @@ TEST_CASE("a JumpIfFalse that lands nowhere is caught the same way", "[vm]") {
     REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
     REQUIRE(vm.stack_size() == 0);
 }
+
+TEST_CASE("Loop moves back by the distance it carries", "[vm]") {
+    // the Jump goes forward to the Loop, the Loop goes back to the Const, and
+    // the Return stops it — a backward jump on its own would never end.
+    Chunk chunk;
+    write_jump(chunk, Opcode::Jump, 3);
+    write_constant(chunk, int64_t{8});
+    chunk.write(Opcode::Return, 1);
+    write_jump(chunk, Opcode::Loop, 6);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 8);
+}
+
+TEST_CASE("Loop leaves the stack alone on the way past", "[vm]") {
+    // it takes nothing off and puts nothing on. the body is what balances itself,
+    // which is the only reason a loop can run any number of times without drift.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    write_constant(chunk, int64_t{2});
+    write_jump(chunk, Opcode::Jump, 1);
+    chunk.write(Opcode::Return, 1);
+    write_jump(chunk, Opcode::Loop, 4);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 2);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 2);
+}
+
+TEST_CASE("a Loop reaching back past the start of the chunk is reported", "[vm]") {
+    // ip_ is a size_t, so subtracting too much wraps round to an enormous number
+    // and run() would stop with nothing to say about why.
+    Chunk chunk;
+    write_jump(chunk, Opcode::Loop, 100, 7);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(std::string(vm.error()->what()) ==
+            "loop distance 100 reaches back past the start of the chunk");
+    REQUIRE(vm.error()->line() == 7);
+}
+
+TEST_CASE("a Loop back to offset zero is allowed", "[vm]") {
+    // the compiler writes exactly this for a loop that starts the chunk, so the
+    // check has to be "past the start" and not "at it".
+    //
+    // globals outlive a run, so the flag is bound by one chunk and the loop that
+    // reads it is a second one starting at offset 0. that is the only way to
+    // have a condition at the very front of a chunk and still get out of the
+    // loop — something has to change between the two passes.
+    Chunk setup;
+    setup.write(Opcode::True, 1);
+    write_global(setup, Opcode::DefineGlobal, "go");
+
+    Chunk chunk;
+    write_global(chunk, Opcode::GetGlobal, "go");
+    write_jump(chunk, Opcode::JumpIfFalse, 7);
+    chunk.write(Opcode::False, 1);
+    write_global(chunk, Opcode::SetGlobal, "go");
+    chunk.write(Opcode::Pop, 1);
+    write_jump(chunk, Opcode::Loop, 12);
+    write_constant(chunk, int64_t{5});
+
+    VM vm;
+    REQUIRE(vm.run(setup) == InterpretResult::Ok);
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 5);
+    REQUIRE(std::get<bool>(*vm.global("go")) == false);
+}

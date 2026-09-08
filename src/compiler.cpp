@@ -201,6 +201,30 @@ void Compiler::patch_jump(std::size_t offset) {
     chunk_.code[offset + 1] = static_cast<uint8_t>(distance & 0xff);
 }
 
+void Compiler::emit_loop(std::size_t loop_start) {
+    emit(Opcode::Loop);
+
+    // the +2 is the operand bytes that haven't been written yet. the VM measures
+    // from the end of the whole instruction, so the distance has to count them
+    // even though chunk_ hasn't got them in it at this point — working it out
+    // after emitting them instead would need the offset saved first, and this is
+    // the same number either way.
+    std::size_t distance = chunk_.size() - loop_start + 2;
+
+    if (distance > max_jump) {
+        // the loop head is a better thing to point at than wherever the body
+        // happened to end, and it is the line the user would go looking at.
+        fail("loop body is too long to jump back (max " + std::to_string(max_jump) + " bytes)",
+             chunk_.line_at(loop_start), 0);
+    }
+
+    // nothing to patch. the target was compiled before this instruction was
+    // written, so unlike emit_jump the distance is already known and the operand
+    // goes straight in.
+    emit_byte(static_cast<uint8_t>((distance >> 8) & 0xff));
+    emit_byte(static_cast<uint8_t>(distance & 0xff));
+}
+
 void Compiler::emit_constant(Value value, const Token& where) {
     std::size_t index = chunk_.add_constant(std::move(value));
     if (index >= Chunk::max_constants) {
@@ -661,13 +685,59 @@ void Compiler::visit_if(IfStmt& stmt) {
     patch_jump(skip_else);
 }
 
+// `while cond { ... }`. this is visit_if with one more jump on the end: an if
+// jumps forward over code it might not want, and a while does that too and then
+// jumps backward over code it wants again. the condition is compiled inside the
+// loop rather than in front of it, which is what gets it re-checked — a Loop
+// landing on the body instead would test it once and never again.
+//
+// the backward jump is the one that needs no patching. its target is the offset
+// the chunk had before any of this was written, so it is known the whole time,
+// where a forward jump has to wait for code that hasn't been compiled yet. the
+// exit jump is the other way round and goes through emit_jump/patch_jump like
+// every forward jump does.
+//
+// no Pops here either, for the same reason as visit_if: JumpIfFalse takes the
+// condition off whether it jumps or not. plan.md's recipe has one after the jump
+// and one after the patch, but that was written expecting the condition to stick
+// around, and step 78 settled it the other way. adding them would eat a value
+// per iteration off whatever was under the loop, which for a loop that runs long
+// enough means the stack unwinds into the program's own variables.
+//
+// getting that balance right matters more here than anywhere else. an if runs
+// once and one value left behind is one value; a loop runs its body as many
+// times as the condition holds, so a body that gains a value per pass grows the
+// stack with the iteration count and a counting loop over a few million turns
+// eats memory until it stops.
+void Compiler::visit_while(WhileStmt& stmt) {
+    // before the condition, not after. this is where every pass comes back to,
+    // so the condition has to be inside the loop for it to be re-tested.
+    std::size_t loop_start = chunk_.size();
+
+    compile_expr(*stmt.condition);
+
+    // the condition is as close to a token as a while gets — the node itself has
+    // none — so the loop's own instructions are stamped with the line it ended
+    // on rather than with the end of the body, which can be pages away.
+    int loop_line = line_;
+
+    std::size_t exit_jump = emit_jump(Opcode::JumpIfFalse);
+    compile_stmt(*stmt.body);
+
+    line_ = loop_line;
+    emit_loop(loop_start);
+
+    // patched last, so it measures to the instruction after the Loop. landing on
+    // the Loop itself would run it and go straight back into the body with a
+    // condition that had already said no.
+    patch_jump(exit_jump);
+}
+
 // everything below is a stub until the step that fills it in. the parameters are
 // cast to void so -Wunused-parameter stays quiet without the names disappearing
 // from the signatures, which would make the diffs in those steps harder to read.
 
 void Compiler::visit_call(CallExpr& expr) { (void)expr; }
-
-void Compiler::visit_while(WhileStmt& stmt) { (void)stmt; }
 
 void Compiler::visit_fn(FnDecl& stmt) { (void)stmt; }
 

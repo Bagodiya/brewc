@@ -400,6 +400,31 @@ InterpretResult VM::run(const Chunk& chunk) {
             break;
         }
 
+        case Opcode::Loop: {
+            // the only instruction that moves ip_ backwards, which is why it is
+            // its own opcode and not a Jump with a negative operand: the operand
+            // is two unsigned bytes and there is nowhere in it to put a sign.
+            std::size_t distance = read_short(chunk);
+
+            if (distance > ip_) {
+                // std::size_t does not go below zero, so subtracting too much
+                // wraps round to an enormous offset and the loop condition in
+                // run() reads it as "past the end" and stops with nothing to
+                // say. same reasoning as the forward check above — only a
+                // hand-built chunk gets here, since the compiler counts the
+                // distance from an offset it already went past.
+                return fail("loop distance " + std::to_string(distance) +
+                                " reaches back past the start of the chunk",
+                            chunk);
+            }
+
+            // no Pop and nothing touched on the stack. the body balanced itself
+            // before this ran, which is the whole reason a loop can run any
+            // number of times without the stack drifting.
+            ip_ -= distance;
+            break;
+        }
+
         case Opcode::Return:
             // step 83 makes this hand a value back to the caller of a function.
             // at the top level there is no caller, so it just stops, and stopping

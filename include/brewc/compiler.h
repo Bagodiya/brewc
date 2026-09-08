@@ -47,8 +47,9 @@ private:
 // value is on the stack afterwards.
 //
 // literals, arithmetic, comparisons, logical operators, variables, assignment,
-// blocks, expression statements and if/else are wired up so far. the rest of the visit_* bodies are
-// still stubs and get filled in one at a time over the next steps.
+// blocks, expression statements, if/else and while loops are wired up so far.
+// the rest of the visit_* bodies are still stubs and get filled in one at a time
+// over the next steps.
 class Compiler : public Visitor, public StmtVisitor {
 public:
     Compiler();
@@ -117,6 +118,15 @@ private:
     // fill in the distance of a jump written earlier, now that the place it has
     // to land is wherever the chunk currently ends.
     void patch_jump(std::size_t offset);
+
+    // write a Loop back to an offset the compiler already went past. nothing has
+    // to be patched here, unlike a forward jump: the target was compiled first,
+    // so the distance is known the moment the instruction is written.
+    //
+    // Loop is its own opcode rather than a Jump with a negative operand because
+    // the operand is two unsigned bytes and there is no room in it for a sign.
+    // the direction lives in the instruction instead, and the VM subtracts.
+    void emit_loop(std::size_t loop_start);
 
     // `&&` and `||`. these get pulled out of visit_binary because they are the
     // only operators that don't evaluate both sides — the right operand is jumped

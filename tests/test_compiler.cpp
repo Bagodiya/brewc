@@ -135,11 +135,11 @@ TEST_CASE("a fresh chunk starts with an empty constant pool", "[compiler]") {
 }
 
 TEST_CASE("statements compile without the stubs blowing up", "[compiler]") {
-    // while and fn are still empty visitors, so nothing here reaches down into
-    // the statements inside them — the `let` in each body never gets compiled,
-    // and the block they wrap never opens a scope either. all this really checks
-    // is that the walk gets to every node and comes back.
-    REQUIRE(compile_source("while 1 { let z = 2 }").size() == 1);
+    // fn is still an empty visitor, so nothing here reaches down into the body —
+    // the `let` inside never gets compiled and the block it wraps never opens a
+    // scope. all this really checks is that the walk gets to the node and comes
+    // back. while used to be in here too and now compiles for real, so it moved
+    // down to the loop tests at the bottom.
     REQUIRE(compile_source("fn add(a, b) { let c = a + b }").size() == 1);
 }
 
@@ -1212,4 +1212,157 @@ TEST_CASE("a logical operator works as an if condition", "[compiler]") {
     VM vm;
     run_source(vm, "let n = 0\nif 1 < 2 && 3 > 2 { n = 1 }");
     REQUIRE(std::get<int64_t>(*vm.global("n")) == 1);
+}
+
+TEST_CASE("a while loop ends with a Loop back to its condition", "[compiler]") {
+    // False, the exit jump, the body's Const and Pop, then the jump back. the
+    // condition is inside the loop, so 0 is what the Loop has to land on — a
+    // target after it would test once and run forever.
+    Chunk chunk = compile_source("while false { 1 }");
+    REQUIRE(op_at(chunk, 0) == Opcode::False);
+    REQUIRE(op_at(chunk, 1) == Opcode::JumpIfFalse);
+    REQUIRE(op_at(chunk, 4) == Opcode::Const);
+    REQUIRE(op_at(chunk, 6) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 7) == Opcode::Loop);
+    REQUIRE(op_at(chunk, 10) == Opcode::Return);
+
+    // counted back from the end of the instruction, so 10 - 10 is offset 0.
+    std::size_t distance = (static_cast<std::size_t>(chunk.code[8]) << 8) | chunk.code[9];
+    REQUIRE(10 - distance == 0);
+}
+
+TEST_CASE("the exit jump lands past the Loop and not on it", "[compiler]") {
+    // patching after the Loop is written is what puts it there. landing on the
+    // Loop would send a finished condition straight back into the body.
+    Chunk chunk = compile_source("while false { 1 }");
+    std::size_t distance = (static_cast<std::size_t>(chunk.code[2]) << 8) | chunk.code[3];
+    REQUIRE(4 + distance == 10);
+    REQUIRE(op_at(chunk, 4 + distance) == Opcode::Return);
+}
+
+TEST_CASE("the loop condition is not popped by anything but the jump", "[compiler]") {
+    // plan.md asks for a Pop after the exit jump and another after the patch.
+    // both were written expecting JumpIfFalse to leave the condition behind, and
+    // it doesn't — either one would eat a value per pass off whatever the loop
+    // was sitting on top of.
+    Chunk chunk = compile_source("while false { 1 }");
+    REQUIRE(op_at(chunk, 4) != Opcode::Pop);
+    REQUIRE(op_at(chunk, 10) != Opcode::Pop);
+}
+
+TEST_CASE("a loop body is its own scope like any other block", "[compiler]") {
+    // the `let` inside is a local, so nothing goes in the pool for it and the
+    // slot is given back before the Loop rather than after it.
+    Chunk chunk = compile_source("while 1 { let y = 2 }");
+    REQUIRE(op_at(chunk, 7) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 8) == Opcode::Loop);
+    for (std::size_t i = 0; i < chunk.size(); ++i) {
+        REQUIRE(op_at(chunk, i) != Opcode::DefineGlobal);
+    }
+}
+
+TEST_CASE("a false condition runs the body no times at all", "[compiler]") {
+    VM vm;
+    run_source(vm, "let n = 0\nwhile false { n = 1 }");
+    REQUIRE(std::get<int64_t>(*vm.global("n")) == 0);
+}
+
+TEST_CASE("a counting loop stops after the right number of passes", "[compiler]") {
+    // the condition being re-read every time round is the whole thing this is
+    // checking. a Loop landing after it would never see n reach 5.
+    VM vm;
+    run_source(vm, "let n = 0\nlet total = 0\nwhile n < 5 { n = n + 1 total = total + n }");
+    REQUIRE(std::get<int64_t>(*vm.global("n")) == 5);
+    REQUIRE(std::get<int64_t>(*vm.global("total")) == 15);
+}
+
+TEST_CASE("the stack is where it started once the loop is done", "[compiler]") {
+    // the one that would catch a stray Pop or a missing one. an if gets away with
+    // being one out, a loop multiplies it by the iteration count.
+    VM vm;
+    run_source(vm, "let n = 0\nwhile n < 20 { n = n + 1 }");
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("a local declared in the body is dropped on every pass", "[compiler]") {
+    // twenty turns with the slot left behind each time is twenty values piled up
+    // under the condition, so the stack check is the real assertion here.
+    VM vm;
+    run_source(vm, "let n = 0\nlet last = 0\n"
+                   "while n < 3 { let doubled = n * 2 last = doubled n = n + 1 }");
+    REQUIRE(std::get<int64_t>(*vm.global("last")) == 4);
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("loops nest without the inner jumps disturbing the outer ones", "[compiler]") {
+    VM vm;
+    run_source(vm,
+               "let rows = 0\nlet cells = 0\n"
+               "while rows < 3 { let cols = 0 while cols < 4 { cols = cols + 1 cells = cells + 1 }"
+               " rows = rows + 1 }");
+    REQUIRE(std::get<int64_t>(*vm.global("cells")) == 12);
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("an if inside a loop keeps its own jumps straight", "[compiler]") {
+    VM vm;
+    run_source(vm, "let n = 0\nlet evens = 0\n"
+                   "while n < 6 { if n % 2 == 0 { evens = evens + 1 } n = n + 1 }");
+    REQUIRE(std::get<int64_t>(*vm.global("evens")) == 3);
+}
+
+TEST_CASE("the condition uses the same truthiness as everything else", "[compiler]") {
+    // 0 is truthy, so the body runs once and the assignment inside it is what
+    // ends the loop. nil is falsy and the second one never starts.
+    VM vm;
+    run_source(vm, "let flag = 0\nlet runs = 0\nwhile flag { flag = false runs = runs + 1 }\n"
+                   "let skipped = 0\nwhile nil { skipped = 1 }");
+    REQUIRE(std::get<int64_t>(*vm.global("runs")) == 1);
+    REQUIRE(std::get<int64_t>(*vm.global("skipped")) == 0);
+}
+
+TEST_CASE("a short-circuiting condition works as a loop guard", "[compiler]") {
+    // the divide is only reached while n is not 0, which is the case && exists
+    // for and the loop re-checks it every pass. it runs 4 down to 1 — 8 / 1 is
+    // still greater than 1 — and the guard is what stops it at 0 instead of
+    // dividing by it.
+    VM vm;
+    run_source(vm,
+               "let n = 4\nlet steps = 0\n"
+               "while n != 0 && 8 / n > 1 { n = n - 1 steps = steps + 1 }");
+    REQUIRE(std::get<int64_t>(*vm.global("steps")) == 4);
+    REQUIRE(std::get<int64_t>(*vm.global("n")) == 0);
+}
+
+TEST_CASE("the Loop takes the loop's line and not the end of the body", "[compiler]") {
+    // the body can run for pages, and a back-jump blaming its last line would
+    // point nowhere near the loop it belongs to.
+    Chunk chunk = compile_source("let n = 3\nwhile n > 0 {\nn = n - 1\n}");
+    std::size_t offset = 0;
+    while (offset < chunk.size() && op_at(chunk, offset) != Opcode::Loop) {
+        offset += instruction_size(chunk, offset);
+    }
+    REQUIRE(offset < chunk.size());
+    REQUIRE(chunk.line_at(offset) == 2);
+}
+
+TEST_CASE("the disassembler counts a compiled Loop backwards", "[compiler]") {
+    Chunk chunk = compile_source("while false { 1 }");
+    std::string out = disassemble(chunk, "while");
+    REQUIRE(out.find("Loop") != std::string::npos);
+    REQUIRE(out.find("-> 0") != std::string::npos);
+}
+
+TEST_CASE("a loop body too long to jump back over is a compile error", "[compiler]") {
+    // same two-byte operand as a forward jump, so the same 65535 ceiling. the
+    // Loop is written before the exit jump is patched, so this is the one that
+    // gives up first.
+    std::string source = "while 1 {\n";
+    for (int i = 0; i < 25000; ++i) {
+        // Const, its pool index and the Pop, three bytes a line.
+        source += "1\n";
+    }
+    source += "}";
+
+    REQUIRE_THROWS_AS(compile_source(source), CompileError);
 }
