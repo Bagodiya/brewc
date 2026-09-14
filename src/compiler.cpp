@@ -140,6 +140,39 @@ void Compiler::compile_expr(Expr& expr) { expr.accept(*this); }
 
 void Compiler::compile_stmt(Stmt& stmt) { stmt.accept(*this); }
 
+std::shared_ptr<CompiledFn> Compiler::compile_function(FnDecl& decl) {
+    reset();
+    set_line(decl.name_token);
+
+    // the whole body is one scope deeper than the top level, so every `let` in
+    // it is a local and not a global.
+    begin_scope();
+
+    // slot 0 is where the function itself will sit when step 82 calls it, with
+    // the arguments pushed above it. the empty name keeps it from ever matching
+    // an identifier, it's only here so the params get slots 1..n.
+    add_local("", decl.name_token);
+    for (const Token& param : decl.params) {
+        // add_local refusing the 257th slot also covers a fn with too many
+        // params, which is good since Call's arg count is one byte too.
+        add_local(param.lexeme, param);
+    }
+
+    compile_stmt(*decl.body);
+
+    // no end_scope. the params and slot 0 get thrown away when the frame is
+    // dropped on return, popping them one at a time here would be wasted work.
+    // just a Return for now so the VM never runs off the end of the chunk, the
+    // implicit nil in front of it is step 83.
+    emit(Opcode::Return);
+
+    auto fn = std::make_shared<CompiledFn>();
+    fn->chunk = std::move(chunk_);
+    fn->arity = static_cast<int>(decl.params.size());
+    fn->name = decl.name;
+    return fn;
+}
+
 void Compiler::reset() {
     // moving the chunk out at the end of a compile leaves it in some valid but
     // unspecified state, so assigning a fresh one is the only safe way to reuse
@@ -733,13 +766,33 @@ void Compiler::visit_while(WhileStmt& stmt) {
     patch_jump(exit_jump);
 }
 
+// `fn add(a, b) { ... }`. the body goes into a chunk of its own through a second
+// Compiler, and the outer chunk only gets the finished function as a constant.
+// after that it's bound exactly like `let add = <that constant>` would be: a
+// global at the top level, a local slot inside a block.
+//
+// nothing in the body runs here. the Const just pushes the function value, the
+// code inside waits until something calls it.
+void Compiler::visit_fn(FnDecl& stmt) {
+    Compiler body;
+    std::shared_ptr<CompiledFn> fn = body.compile_function(stmt);
+
+    set_line(stmt.name_token);
+    emit_constant(Value{std::move(fn)}, stmt.name_token);
+
+    if (scope_depth_ > 0) {
+        add_local(stmt.name, stmt.name_token);
+        return;
+    }
+
+    emit(Opcode::DefineGlobal, name_constant(stmt.name, stmt.name_token));
+}
+
 // everything below is a stub until the step that fills it in. the parameters are
 // cast to void so -Wunused-parameter stays quiet without the names disappearing
 // from the signatures, which would make the diffs in those steps harder to read.
 
 void Compiler::visit_call(CallExpr& expr) { (void)expr; }
-
-void Compiler::visit_fn(FnDecl& stmt) { (void)stmt; }
 
 void Compiler::visit_return(ReturnStmt& stmt) { (void)stmt; }
 

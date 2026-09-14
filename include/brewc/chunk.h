@@ -144,6 +144,19 @@ struct Chunk {
     const Value& constant_at(std::size_t index) const;
 };
 
+// what `fn name(a, b) { ... }` compiles to. the body gets a chunk of its own
+// instead of being spliced into the one around it, so the outer code doesn't run
+// it on the way past and a call (step 82) has something to point ip at.
+//
+// arity is checked against the argument count at the call. upvalue_count stays 0
+// until closures show up in step 84.
+struct CompiledFn {
+    Chunk chunk;
+    int arity = 0;
+    std::string name;
+    int upvalue_count = 0;
+};
+
 } // namespace brewc
 
 #endif

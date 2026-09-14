@@ -113,6 +113,15 @@ void run_source(VM& vm, const std::string& source) {
     REQUIRE(vm.run(chunk) == InterpretResult::Ok);
 }
 
+// the function a Const at this offset pushes. fails the test instead of throwing
+// bad_variant_access if something else ended up in that pool slot.
+std::shared_ptr<CompiledFn> fn_at(const Chunk& chunk, std::size_t offset) {
+    REQUIRE(op_at(chunk, offset) == Opcode::Const);
+    const Value& value = chunk.constant_at(chunk.code[offset + 1]);
+    REQUIRE(is_compiled_fn(value));
+    return std::get<std::shared_ptr<CompiledFn>>(value);
+}
+
 } // namespace
 
 TEST_CASE("an empty program compiles to a single Return", "[compiler]") {
@@ -135,18 +144,26 @@ TEST_CASE("a fresh chunk starts with an empty constant pool", "[compiler]") {
 }
 
 TEST_CASE("statements compile without the stubs blowing up", "[compiler]") {
-    // fn is still an empty visitor, so nothing here reaches down into the body —
-    // the `let` inside never gets compiled and the block it wraps never opens a
-    // scope. all this really checks is that the walk gets to the node and comes
-    // back. while used to be in here too and now compiles for real, so it moved
-    // down to the loop tests at the bottom.
-    REQUIRE(compile_source("fn add(a, b) { let c = a + b }").size() == 1);
+    // call and return are the only empty visitors left. fn used to be the example
+    // here and compiles for real now, it's down with the function tests.
+    REQUIRE_NOTHROW(compile_source("fn add(a, b) { return add(a, b) }"));
 }
 
 TEST_CASE("nested blocks are walked all the way down", "[compiler]") {
+    // the top level is just Const, DefineGlobal, Return. everything else ended up
+    // in the function's own chunk, so that's where the loop has to be.
     Chunk chunk = compile_source("fn outer(n) { while n { if n { let deep = 1 } } }");
-    REQUIRE(chunk.size() == 1);
-    REQUIRE(op_at(chunk, 0) == Opcode::Return);
+    REQUIRE(chunk.size() == 5);
+    REQUIRE(op_at(chunk, 0) == Opcode::Const);
+    REQUIRE(op_at(chunk, 2) == Opcode::DefineGlobal);
+    REQUIRE(op_at(chunk, 4) == Opcode::Return);
+
+    const Chunk& body = fn_at(chunk, 0)->chunk;
+    bool has_loop = false;
+    for (std::size_t i = 0; i < body.size(); i += instruction_size(body, i)) {
+        if (op_at(body, i) == Opcode::Loop) has_loop = true;
+    }
+    REQUIRE(has_loop);
 }
 
 TEST_CASE("a single expression can be compiled on its own", "[compiler]") {
@@ -1365,4 +1382,161 @@ TEST_CASE("a loop body too long to jump back over is a compile error", "[compile
     source += "}";
 
     REQUIRE_THROWS_AS(compile_source(source), CompileError);
+}
+
+TEST_CASE("a fn declaration compiles into a function with its own chunk", "[compiler]") {
+    // the outer chunk only pushes the function and names it, the same two
+    // instructions a top level `let` would use.
+    Chunk chunk = compile_source("fn f(a, b) {}");
+    REQUIRE(chunk.size() == 5);
+    REQUIRE(op_at(chunk, 2) == Opcode::DefineGlobal);
+    REQUIRE(std::get<std::string>(chunk.constant_at(chunk.code[3])) == "f");
+    REQUIRE(op_at(chunk, 4) == Opcode::Return);
+
+    std::shared_ptr<CompiledFn> fn = fn_at(chunk, 0);
+    REQUIRE(fn->name == "f");
+    REQUIRE(fn->arity == 2);
+    REQUIRE(fn->upvalue_count == 0);
+
+    // an empty body is still a chunk the VM can stop in.
+    REQUIRE(fn->chunk.size() == 1);
+    REQUIRE(op_at(fn->chunk, 0) == Opcode::Return);
+}
+
+TEST_CASE("a fn with no params has arity 0", "[compiler]") {
+    Chunk chunk = compile_source("fn main() {}");
+    REQUIRE(fn_at(chunk, 0)->arity == 0);
+}
+
+TEST_CASE("the body ends up in the function's chunk and not the outer one", "[compiler]") {
+    Chunk chunk = compile_source("fn f() { 1 + 2 }");
+    for (std::size_t i = 0; i < chunk.size(); i += instruction_size(chunk, i)) {
+        REQUIRE(op_at(chunk, i) != Opcode::Add);
+    }
+
+    const Chunk& body = fn_at(chunk, 0)->chunk;
+    REQUIRE(op_at(body, 4) == Opcode::Add);
+    REQUIRE(op_at(body, 5) == Opcode::Pop);
+    REQUIRE(op_at(body, 6) == Opcode::Return);
+
+    // the body's literals go in the body's pool too, the outer one only has the
+    // function and its name.
+    REQUIRE(chunk.constants.size() == 2);
+    REQUIRE(body.constants.size() == 2);
+}
+
+TEST_CASE("params are locals starting at slot 1", "[compiler]") {
+    // slot 0 is saved for the function itself, which is where step 82 will have
+    // it sitting on the stack below the arguments.
+    Chunk chunk = compile_source("fn f(a, b) { a b }");
+    const Chunk& body = fn_at(chunk, 0)->chunk;
+    REQUIRE(op_at(body, 0) == Opcode::GetLocal);
+    REQUIRE(body.code[1] == 1);
+    REQUIRE(op_at(body, 3) == Opcode::GetLocal);
+    REQUIRE(body.code[4] == 2);
+}
+
+TEST_CASE("a let inside a fn body is a local and not a global", "[compiler]") {
+    Chunk chunk = compile_source("fn f(a) { let x = 1 x }");
+    const Chunk& body = fn_at(chunk, 0)->chunk;
+    for (std::size_t i = 0; i < body.size(); i += instruction_size(body, i)) {
+        REQUIRE(op_at(body, i) != Opcode::DefineGlobal);
+    }
+
+    // a took slot 1, so x lands on 2.
+    REQUIRE(op_at(body, 2) == Opcode::GetLocal);
+    REQUIRE(body.code[3] == 2);
+}
+
+TEST_CASE("a name that isn't a param is looked up as a global", "[compiler]") {
+    Chunk chunk = compile_source("fn f(a) { print }");
+    const Chunk& body = fn_at(chunk, 0)->chunk;
+    REQUIRE(op_at(body, 0) == Opcode::GetGlobal);
+    REQUIRE(std::get<std::string>(body.constant_at(body.code[1])) == "print");
+}
+
+TEST_CASE("a param doesn't leak out into the code after the fn", "[compiler]") {
+    // the body had its own Compiler, so `a` was never in the outer locals and
+    // reading it afterwards is a global.
+    Chunk chunk = compile_source("fn f(a) { a }\na");
+    REQUIRE(op_at(chunk, 4) == Opcode::GetGlobal);
+}
+
+TEST_CASE("a fn inside a block is bound to a local slot", "[compiler]") {
+    // Const, then nothing, since the value on the stack is the local. end_scope
+    // pops it on the way out like any other.
+    Chunk chunk = compile_source("{ fn g() {} }");
+    REQUIRE(chunk.size() == 4);
+    REQUIRE(fn_at(chunk, 0)->name == "g");
+    REQUIRE(op_at(chunk, 2) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 3) == Opcode::Return);
+}
+
+TEST_CASE("compiling a fn body doesn't mess up the outer block's slots", "[compiler]") {
+    // a is slot 0 and g is slot 1 out here, and x is slot 1 in there. if the two
+    // shared one locals_ list the read of a afterwards would come out wrong.
+    Chunk chunk = compile_source("{ let a = 1 fn g(x) { x } a }");
+    REQUIRE(op_at(chunk, 4) == Opcode::GetLocal);
+    REQUIRE(chunk.code[5] == 0);
+
+    const Chunk& body = fn_at(chunk, 2)->chunk;
+    REQUIRE(op_at(body, 0) == Opcode::GetLocal);
+    REQUIRE(body.code[1] == 1);
+}
+
+TEST_CASE("two fns with the same body still get a constant each", "[compiler]") {
+    Chunk chunk = compile_source("fn a() {}\nfn b() {}");
+    REQUIRE(fn_at(chunk, 0)->name == "a");
+    REQUIRE(fn_at(chunk, 4)->name == "b");
+    REQUIRE(chunk.code[1] != chunk.code[5]);
+}
+
+TEST_CASE("the function's instructions carry the lines from its body", "[compiler]") {
+    Chunk chunk = compile_source("fn f() {\n\n1\n}");
+    const Chunk& body = fn_at(chunk, 0)->chunk;
+    REQUIRE(body.line_at(0) == 3);
+    REQUIRE(chunk.line_at(0) == 1);
+}
+
+TEST_CASE("255 params is fine but 256 is a compile error", "[compiler]") {
+    // slot 0 plus the params all have to fit in a one-byte slot number.
+    auto fn_with_params = [](int count) {
+        std::string source = "fn f(";
+        for (int i = 0; i < count; ++i) {
+            if (i > 0) source += ", ";
+            source += "p" + std::to_string(i);
+        }
+        return source + ") {}";
+    };
+
+    REQUIRE(fn_at(compile_source(fn_with_params(255)), 0)->arity == 255);
+    REQUIRE_THROWS_AS(compile_source(fn_with_params(256)), CompileError);
+}
+
+TEST_CASE("an error inside a fn body stops the whole compile", "[compiler]") {
+    std::string source = "fn f() {\n";
+    for (int i = 0; i < 300; ++i) {
+        source += std::to_string(i) + "\n";
+    }
+    source += "}";
+    REQUIRE_THROWS_AS(compile_source(source), CompileError);
+}
+
+TEST_CASE("running a fn declaration binds the function as a global", "[compiler]") {
+    // nothing calls it yet, this only checks the value gets there in one piece.
+    VM vm;
+    run_source(vm, "fn add(a, b) { a + b }");
+    REQUIRE(vm.stack_size() == 0);
+
+    const Value* add = vm.global("add");
+    REQUIRE(add != nullptr);
+    REQUIRE(is_compiled_fn(*add));
+    REQUIRE(std::get<std::shared_ptr<CompiledFn>>(*add)->arity == 2);
+    REQUIRE(to_string(*add) == "<fn add>");
+}
+
+TEST_CASE("the disassembler shows a compiled fn by name", "[compiler]") {
+    Chunk chunk = compile_source("fn greet() {}");
+    std::string out = disassemble(chunk, "fn");
+    REQUIRE(out.find("'<fn greet>'") != std::string::npos);
 }

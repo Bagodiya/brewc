@@ -47,9 +47,9 @@ private:
 // value is on the stack afterwards.
 //
 // literals, arithmetic, comparisons, logical operators, variables, assignment,
-// blocks, expression statements, if/else and while loops are wired up so far.
-// the rest of the visit_* bodies are still stubs and get filled in one at a time
-// over the next steps.
+// blocks, expression statements, if/else, while loops and fn declarations are
+// wired up so far. calls and return are still stubs and get filled in over the
+// next steps.
 class Compiler : public Visitor, public StmtVisitor {
 public:
     Compiler();
@@ -85,6 +85,15 @@ private:
     // recurse into their children by name instead of spelling out the dispatch.
     void compile_expr(Expr& expr);
     void compile_stmt(Stmt& stmt);
+
+    // compile a fn body into a CompiledFn of its own. visit_fn calls this on a
+    // second Compiler rather than on itself, so the body's locals and chunk don't
+    // get mixed in with whatever the outer code was in the middle of.
+    //
+    // no enclosing pointer yet. nothing needs to look outward until upvalues in
+    // step 84, and a body that names an outer local just falls through to a
+    // global lookup for now.
+    std::shared_ptr<CompiledFn> compile_function(FnDecl& decl);
 
     // start a fresh chunk. compile() and compile_expression() both call this
     // first, so neither one can be handed leftovers from an earlier run.

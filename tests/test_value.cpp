@@ -5,6 +5,7 @@
 #include <string>
 
 #include "brewc/ast.h"
+#include "brewc/chunk.h"
 #include "brewc/token.h"
 #include "brewc/value.h"
 
@@ -101,4 +102,23 @@ TEST_CASE("to_string keeps the fractional part of a float", "[value]") {
 TEST_CASE("to_string prints a function with its name", "[value]") {
     FnDecl decl(Token(TokenKind::Identifier, "greet", 1, 1), {}, nullptr);
     REQUIRE(to_string(Value{Function{&decl, nullptr}}) == "<fn greet>");
+}
+
+TEST_CASE("a compiled fn is a function to the program", "[value]") {
+    auto fn = std::make_shared<CompiledFn>();
+    fn->name = "square";
+    Value v = fn;
+    REQUIRE(is_compiled_fn(v));
+    REQUIRE_FALSE(is_function(v));
+    REQUIRE_FALSE(is_native(v));
+    REQUIRE(type_name(v) == "function");
+    REQUIRE(to_string(v) == "<fn square>");
+}
+
+TEST_CASE("the other variants don't claim to be a compiled fn", "[value]") {
+    REQUIRE_FALSE(is_compiled_fn(Value{}));
+    REQUIRE_FALSE(is_compiled_fn(Value{int64_t{1}}));
+    REQUIRE_FALSE(is_compiled_fn(Value{2.5}));
+    REQUIRE_FALSE(is_compiled_fn(Value{std::string("fn")}));
+    REQUIRE(to_string(Value{2.5}) == "2.5");
 }
