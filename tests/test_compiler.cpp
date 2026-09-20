@@ -144,9 +144,9 @@ TEST_CASE("a fresh chunk starts with an empty constant pool", "[compiler]") {
 }
 
 TEST_CASE("statements compile without the stubs blowing up", "[compiler]") {
-    // call and return are the only empty visitors left. fn used to be the example
-    // here and compiles for real now, it's down with the function tests.
-    REQUIRE_NOTHROW(compile_source("fn add(a, b) { return add(a, b) }"));
+    // return is the last empty visitor. call used to be the other example here
+    // and compiles for real now, it's down with the call tests.
+    REQUIRE_NOTHROW(compile_source("fn add(a, b) { return a + b }"));
 }
 
 TEST_CASE("nested blocks are walked all the way down", "[compiler]") {
@@ -1539,4 +1539,114 @@ TEST_CASE("the disassembler shows a compiled fn by name", "[compiler]") {
     Chunk chunk = compile_source("fn greet() {}");
     std::string out = disassemble(chunk, "fn");
     REQUIRE(out.find("'<fn greet>'") != std::string::npos);
+}
+
+TEST_CASE("a call emits the callee, then the arguments, then Call", "[compiler]") {
+    // that order is the calling convention and not just one that happens to
+    // work: the VM makes the callee slot 0 of the frame and the arguments the
+    // slots above it, so anything emitted out of order lands in the wrong slot.
+    Chunk chunk = compile_source("fn f(a, b) {} f(1, 2)");
+
+    // Const <fn>, DefineGlobal f, then the call statement.
+    REQUIRE(op_at(chunk, 4) == Opcode::GetGlobal);
+    REQUIRE(op_at(chunk, 6) == Opcode::Const);
+    REQUIRE(op_at(chunk, 8) == Opcode::Const);
+    REQUIRE(op_at(chunk, 10) == Opcode::Call);
+    REQUIRE(chunk.code[11] == 2);
+}
+
+TEST_CASE("a call with no arguments still carries its count", "[compiler]") {
+    Chunk chunk = compile_source("fn f() {} f()");
+    REQUIRE(op_at(chunk, 6) == Opcode::Call);
+    REQUIRE(chunk.code[7] == 0);
+}
+
+TEST_CASE("the argument values are pushed left to right", "[compiler]") {
+    // the pool holds them in the order they were compiled, so reading the two
+    // Const operands back shows which side went first.
+    Chunk chunk = compile_source("fn f(a, b) {} f(10, 20)");
+    REQUIRE(std::get<int64_t>(chunk.constant_at(chunk.code[7])) == 10);
+    REQUIRE(std::get<int64_t>(chunk.constant_at(chunk.code[9])) == 20);
+}
+
+TEST_CASE("a call statement drops the value the call leaves", "[compiler]") {
+    // every expression statement ends in a Pop, and a call is no different — the
+    // VM pushes whatever the function returned and nothing here wants it.
+    Chunk chunk = compile_source("fn f() {} f()");
+    REQUIRE(op_at(chunk, 8) == Opcode::Pop);
+}
+
+TEST_CASE("calling a local goes through GetLocal", "[compiler]") {
+    // the callee is compiled like any other expression, so it resolves the same
+    // way a bare mention of the name would.
+    Chunk chunk = compile_source("{ fn f() {} f() }");
+    const Chunk& body = chunk;
+    bool has_get_local = false;
+    for (std::size_t i = 0; i < body.size(); i += instruction_size(body, i)) {
+        if (op_at(body, i) == Opcode::GetLocal) has_get_local = true;
+    }
+    REQUIRE(has_get_local);
+}
+
+TEST_CASE("the callee can be any expression", "[compiler]") {
+    // `make()()` needs nothing special: the inner call leaves one value on the
+    // stack like everything else and the outer Call takes it from there.
+    Chunk chunk = compile_source("fn make() {} make()()");
+    int calls = 0;
+    for (std::size_t i = 0; i < chunk.size(); i += instruction_size(chunk, i)) {
+        if (op_at(chunk, i) == Opcode::Call) ++calls;
+    }
+    REQUIRE(calls == 2);
+}
+
+TEST_CASE("a call is recorded against the line its arguments open on", "[compiler]") {
+    // the opening paren, which is the token the interpreter blames a bad call on
+    // as well. a call broken over two lines is reported on the first of them.
+    Chunk chunk = compile_source("fn f(a) {}\nf(\n1)");
+    std::size_t offset = 0;
+    for (std::size_t i = 0; i < chunk.size(); i += instruction_size(chunk, i)) {
+        if (op_at(chunk, i) == Opcode::Call) offset = i;
+    }
+    REQUIRE(chunk.line_at(offset) == 2);
+}
+
+TEST_CASE("255 arguments is fine but 256 is a compile error", "[compiler]") {
+    // the count rides in one operand byte, same limit the parameter side runs
+    // into from the other direction.
+    auto call_with_args = [](int count) {
+        std::string source = "fn f() {} f(";
+        for (int i = 0; i < count; ++i) {
+            if (i > 0) source += ", ";
+            source += "1";
+        }
+        return source + ")";
+    };
+
+    REQUIRE_NOTHROW(compile_source(call_with_args(255)));
+    REQUIRE_THROWS_AS(compile_source(call_with_args(256)), CompileError);
+}
+
+TEST_CASE("a compiled call runs the function it names", "[compiler]") {
+    // the whole way through for once: source to bytecode to a frame the VM runs.
+    // the body writes to a global because its Return stops the VM where it
+    // stands until step 83, so there is nothing left on the stack to look at.
+    VM vm;
+    run_source(vm, "let out = 0\nfn f(a) { out = a }\nf(7)");
+
+    REQUIRE(vm.global("out") != nullptr);
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 7);
+}
+
+TEST_CASE("a compiled call sees its parameters in the right order", "[compiler]") {
+    VM vm;
+    run_source(vm, "let out = 0\nfn f(a, b) { out = a - b }\nf(10, 4)");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 6);
+}
+
+TEST_CASE("a local in a fn body sits above the parameters", "[compiler]") {
+    // the body's own locals are counted from the frame base like the params are,
+    // so a `let` inside a function lands in the slot after the last one.
+    VM vm;
+    run_source(vm, "let out = 0\nfn f(a) { let twice = a + a out = twice }\nf(6)");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 12);
 }

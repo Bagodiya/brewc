@@ -788,11 +788,50 @@ void Compiler::visit_fn(FnDecl& stmt) {
     emit(Opcode::DefineGlobal, name_constant(stmt.name, stmt.name_token));
 }
 
-// everything below is a stub until the step that fills it in. the parameters are
-// cast to void so -Wunused-parameter stays quiet without the names disappearing
-// from the signatures, which would make the diffs in those steps harder to read.
+// `f(1, 2)`. the callee goes down first and the arguments on top of it, in the
+// order they were written, and then one Call carrying how many there were.
+//
+// that layout is the calling convention, not just an order that happens to work.
+// the VM pushes a frame whose slot 0 is the callee and whose slots 1..n are the
+// arguments, so a body reading its first parameter as slot 1 only finds the right
+// value because the arguments were compiled left to right and nothing was emitted
+// in between. compile_function reserves slot 0 for the same reason.
+//
+// the callee is an expression and not a name, so `make()()` compiles without
+// anything special here — whatever it was leaves one value on the stack like
+// every other expression, and Call takes it from there.
+//
+// nothing checks that the thing is callable or that the count matches its arity.
+// neither is known here: a call can be compiled long before the fn it names is,
+// and the name might be a global that gets bound further down the file. both
+// checks are the VM's at the moment of the call.
+void Compiler::visit_call(CallExpr& expr) {
+    compile_expr(*expr.callee);
 
-void Compiler::visit_call(CallExpr& expr) { (void)expr; }
+    for (std::unique_ptr<Expr>& arg : expr.args) {
+        compile_expr(*arg);
+    }
+
+    // the count rides in a single operand byte, same as a local's slot number, so
+    // 255 is as many as an instruction can name. a limit of the encoding rather
+    // than of the language, which is why it is a CompileError with a line on it —
+    // and the matching cap on the parameter side already falls out of add_local
+    // refusing a 257th slot.
+    if (expr.args.size() > 255) {
+        fail("too many arguments in one call (max 255)", expr.paren);
+    }
+
+    // the opening paren and not the callee, which for a call spread over several
+    // lines is the line the argument list starts on. that is the token
+    // Interpreter::visit_call points its own call errors at, so a wrong argument
+    // count is blamed on the same line whichever backend caught it.
+    set_line(expr.paren);
+    emit(Opcode::Call, static_cast<uint8_t>(expr.args.size()));
+}
+
+// still a stub until the step that fills it in. the parameter is cast to void so
+// -Wunused-parameter stays quiet without the name disappearing from the
+// signature, which would make the diff in that step harder to read.
 
 void Compiler::visit_return(ReturnStmt& stmt) { (void)stmt; }
 

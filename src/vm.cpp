@@ -1,10 +1,12 @@
 #include "brewc/vm.h"
 
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "brewc/value_ops.h"
 
@@ -152,26 +154,41 @@ VM::VM() {
 
 InterpretResult VM::run(const Chunk& chunk) {
     stack_.clear();
+
+    // a chunk that stopped mid-call left frames behind, and the slots they were
+    // counting from went out with the stack clear above, so carrying on inside
+    // one would read locals out of a stack that no longer has them.
+    frames_.clear();
     ip_ = 0;
 
     // a run that goes fine has to leave error() empty, or the last failure would
     // still be sitting there for the caller to find and report a second time.
     error_.reset();
 
+    // which chunk the instructions are being read out of. it starts as the one
+    // handed in and moves to the callee's on a Call, which is the only reason
+    // this is a pointer rather than the parameter being used directly — the
+    // dispatch loop stops being about one chunk the moment calls exist.
+    //
+    // ip_ stays a member because fail() needs it after the loop has been left
+    // behind. the chunk does not, since every failure is reported before the
+    // frame it happened in is dropped.
+    const Chunk* code = &chunk;
+
     // an empty chunk has no Return to stop at, so the loop condition has to be
     // the one that ends the run. that also covers a chunk whose last instruction
     // was truncated mid-operand: read_byte walks ip past the end and the next
     // check here stops instead of reading whatever is after the vector.
-    while (ip_ < chunk.size()) {
-        Opcode op = static_cast<Opcode>(read_byte(chunk));
+    while (ip_ < code->size()) {
+        Opcode op = static_cast<Opcode>(read_byte(*code));
 
         switch (op) {
         case Opcode::Const: {
-            std::size_t index = read_byte(chunk);
+            std::size_t index = read_byte(*code);
             // constant_at answers an index the pool does not have with nil rather
             // than crashing, so a chunk written by hand in a test can be wrong
             // without taking the process down with it.
-            push(chunk.constant_at(index));
+            push(code->constant_at(index));
             break;
         }
 
@@ -211,7 +228,7 @@ InterpretResult VM::run(const Chunk& chunk) {
                 // dividing by zero, or adding an int to a bool. the helper wrote
                 // the message and fail() adds the line it happened on, since the
                 // helper has no idea where in the program it was called from.
-                return fail(e.what(), chunk);
+                return fail(e.what(), *code);
             }
             break;
         }
@@ -232,7 +249,7 @@ InterpretResult VM::run(const Chunk& chunk) {
                 // ordering two strings, or a bool against a number. equality never
                 // gets here — any two values can be compared for that, they are
                 // just not equal when their kinds differ.
-                return fail(e.what(), chunk);
+                return fail(e.what(), *code);
             }
             break;
         }
@@ -256,19 +273,19 @@ InterpretResult VM::run(const Chunk& chunk) {
             try {
                 push(negate(operand));
             } catch (const std::runtime_error& e) {
-                return fail(e.what(), chunk);
+                return fail(e.what(), *code);
             }
             break;
         }
 
         case Opcode::DefineGlobal: {
-            std::size_t index = read_byte(chunk);
-            const Value& name = chunk.constant_at(index);
+            std::size_t index = read_byte(*code);
+            const Value& name = code->constant_at(index);
             if (!is_string(name)) {
                 // the compiler always puts a string there, so this is a chunk
                 // that was built by hand or one whose operand byte went astray.
                 // saying so beats binding a global called "42".
-                return fail("global name operand is not a string", chunk);
+                return fail("global name operand is not a string", *code);
             }
 
             // define and not insert. writing `let x` twice replaces the old
@@ -279,10 +296,10 @@ InterpretResult VM::run(const Chunk& chunk) {
         }
 
         case Opcode::GetGlobal: {
-            std::size_t index = read_byte(chunk);
-            const Value& name = chunk.constant_at(index);
+            std::size_t index = read_byte(*code);
+            const Value& name = code->constant_at(index);
             if (!is_string(name)) {
-                return fail("global name operand is not a string", chunk);
+                return fail("global name operand is not a string", *code);
             }
 
             auto found = globals_.find(std::get<std::string>(name));
@@ -290,17 +307,17 @@ InterpretResult VM::run(const Chunk& chunk) {
                 // word for word what Interpreter::visit_identifier says. the two
                 // backends have to be indistinguishable from the outside, and an
                 // error message is the part of that a user actually reads.
-                return fail("undefined variable '" + std::get<std::string>(name) + "'", chunk);
+                return fail("undefined variable '" + std::get<std::string>(name) + "'", *code);
             }
             push(found->second);
             break;
         }
 
         case Opcode::SetGlobal: {
-            std::size_t index = read_byte(chunk);
-            const Value& name = chunk.constant_at(index);
+            std::size_t index = read_byte(*code);
+            const Value& name = code->constant_at(index);
             if (!is_string(name)) {
-                return fail("global name operand is not a string", chunk);
+                return fail("global name operand is not a string", *code);
             }
 
             auto found = globals_.find(std::get<std::string>(name));
@@ -309,7 +326,7 @@ InterpretResult VM::run(const Chunk& chunk) {
                 // definition, so a typo on the left of an `=` is caught instead
                 // of creating a second variable that shadows nothing. same rule
                 // as Environment::assign.
-                return fail("undefined variable '" + std::get<std::string>(name) + "'", chunk);
+                return fail("undefined variable '" + std::get<std::string>(name) + "'", *code);
             }
 
             // peek, not pop. assignment is an expression and its value is the
@@ -320,12 +337,24 @@ InterpretResult VM::run(const Chunk& chunk) {
         }
 
         case Opcode::GetLocal: {
-            std::size_t slot = read_byte(chunk);
+            // the operand counts from the frame's slot 0 and not from the bottom
+            // of the stack, which is the whole trick that makes recursion work:
+            // the same GetLocal 1 in the same chunk reads a different value in
+            // every call, because each one brought its own base with it. at the
+            // top level there is no frame and the base is 0, so this is what it
+            // always was.
+            std::size_t offset = read_byte(*code);
+            std::size_t slot = frame_base() + offset;
             if (slot >= stack_.size()) {
                 // the compiler only hands out a slot it counted onto the stack
                 // itself, so this is a hand-built chunk or one whose operand byte
                 // went astray. saying so beats reading past the vector.
-                return fail("local slot " + std::to_string(slot) + " is out of range", chunk);
+                //
+                // the number in the message is the one the instruction carries,
+                // not the absolute slot it worked out to — the first is what a
+                // disassembly of the chunk shows and the second would send anyone
+                // reading it looking for a byte nobody wrote.
+                return fail("local slot " + std::to_string(offset) + " is out of range", *code);
             }
 
             // a copy onto the top, not a move out of the slot. the variable is
@@ -336,9 +365,10 @@ InterpretResult VM::run(const Chunk& chunk) {
         }
 
         case Opcode::SetLocal: {
-            std::size_t slot = read_byte(chunk);
+            std::size_t offset = read_byte(*code);
+            std::size_t slot = frame_base() + offset;
             if (slot >= stack_.size()) {
-                return fail("local slot " + std::to_string(slot) + " is out of range", chunk);
+                return fail("local slot " + std::to_string(offset) + " is out of range", *code);
             }
 
             // peek and not pop, same as SetGlobal. assignment is an expression
@@ -371,7 +401,7 @@ InterpretResult VM::run(const Chunk& chunk) {
             // ends up being taken. the two bytes are part of the instruction, so
             // falling through without reading them would leave ip_ pointing at
             // half an offset and the VM would run it as an opcode.
-            std::size_t distance = read_short(chunk);
+            std::size_t distance = read_short(*code);
 
             if (op == Opcode::JumpIfFalse) {
                 // the condition comes off either way. the expression in front of
@@ -387,14 +417,14 @@ InterpretResult VM::run(const Chunk& chunk) {
             }
 
             std::size_t target = ip_ + distance;
-            if (target > chunk.size()) {
+            if (target > code->size()) {
                 // the compiler patches every jump it writes to a spot inside the
                 // chunk, so this is a hand-built chunk or one whose operand went
                 // astray — including a jump that was emitted and never patched,
                 // which is why the placeholder is 0xffff. landing exactly on the
                 // end is allowed and just stops the run.
                 return fail("jump target " + std::to_string(target) + " is outside the chunk",
-                            chunk);
+                            *code);
             }
             ip_ = target;
             break;
@@ -404,7 +434,7 @@ InterpretResult VM::run(const Chunk& chunk) {
             // the only instruction that moves ip_ backwards, which is why it is
             // its own opcode and not a Jump with a negative operand: the operand
             // is two unsigned bytes and there is nowhere in it to put a sign.
-            std::size_t distance = read_short(chunk);
+            std::size_t distance = read_short(*code);
 
             if (distance > ip_) {
                 // std::size_t does not go below zero, so subtracting too much
@@ -415,7 +445,7 @@ InterpretResult VM::run(const Chunk& chunk) {
                 // distance from an offset it already went past.
                 return fail("loop distance " + std::to_string(distance) +
                                 " reaches back past the start of the chunk",
-                            chunk);
+                            *code);
             }
 
             // no Pop and nothing touched on the stack. the body balanced itself
@@ -425,26 +455,92 @@ InterpretResult VM::run(const Chunk& chunk) {
             break;
         }
 
+        case Opcode::Call: {
+            // how many arguments were pushed. they are sitting on top of the
+            // thing being called, since the compiler emits the callee first and
+            // then walks the argument list.
+            std::size_t argc = read_byte(*code);
+
+            if (argc >= stack_.size()) {
+                // a chunk built by hand can name more arguments than were ever
+                // pushed, and peek would answer the ones it cannot reach with nil
+                // and then call it — which reports the wrong mistake.
+                return fail("call wants " + std::to_string(argc) +
+                                " arguments but the stack only holds " +
+                                std::to_string(stack_.size()),
+                            *code);
+            }
+
+            // peek and not pop, and this is the one place where that is more than
+            // a convenience: the callee stays where it is and becomes slot 0 of
+            // the frame about to be pushed, with the arguments already lined up
+            // above it as slots 1..n. that is why compile_function reserves slot
+            // 0 under an empty name — nothing is copied or rearranged to set a
+            // call up, the stack is already in the right shape.
+            const Value& callee = peek(argc);
+            if (!is_compiled_fn(callee)) {
+                // word for word what Interpreter::visit_call says. a value the VM
+                // could call but the tree-walker could not, or the other way
+                // round, would be the two backends disagreeing about the
+                // language and not just about their messages.
+                return fail("can only call functions, not " + type_name(callee), *code);
+            }
+
+            std::shared_ptr<CompiledFn> fn = std::get<std::shared_ptr<CompiledFn>>(callee);
+            if (static_cast<int>(argc) != fn->arity) {
+                // same wording again, down to the plural being wrong for one
+                // argument. matching the tree-walker matters more than the
+                // grammar does, and fixing it is a change to both backends.
+                return fail("function '" + fn->name + "' takes " + std::to_string(fn->arity) +
+                                " arguments but got " + std::to_string(argc),
+                            *code);
+            }
+
+            if (frames_.size() >= max_frames) {
+                // a recursion with no base case gets here. the C++ stack is not
+                // what runs out — the frames are a vector on the heap and the
+                // dispatch loop never calls itself — so nothing else would stop
+                // it before the allocator did.
+                return fail("stack overflow", *code);
+            }
+
+            // the ip written down is the caller's, pointing at whatever follows
+            // this instruction, and the line is the one the Call itself was
+            // recorded under. ip_ has stepped past both the opcode and its
+            // operand by now, so the opcode's own byte is two back.
+            frames_.push_back(CallFrame{fn, ip_, stack_.size() - argc - 1, code->line_at(ip_ - 2)});
+
+            // from here the loop is reading someone else's chunk. nothing is
+            // saved about this one beyond the frame above, since the callee's
+            // Return is the only way back and that is what unwinds it.
+            code = &fn->chunk;
+            ip_ = 0;
+            break;
+        }
+
         case Opcode::Return:
-            // step 83 makes this hand a value back to the caller of a function.
-            // at the top level there is no caller, so it just stops, and stopping
-            // without popping is what leaves the program's result on the stack
-            // for stack_top to report.
+            // step 83 makes this hand a value back to the caller and carry on in
+            // the chunk the frame remembers. until then it stops the run wherever
+            // it is, so a call reaches its body and the body ends the program —
+            // which is enough to see a frame being pushed and its locals being
+            // read, and not enough to see one being dropped.
+            //
+            // at the top level this is what it always was: stopping without
+            // popping is what leaves the program's result on the stack for
+            // stack_top to report.
             return InterpretResult::Ok;
 
         default:
-            // everything else is a real opcode the compiler already emits and
-            // this step does not run yet. saying so by stopping is the only
-            // honest answer — the alternative is skipping the instruction, which
-            // would carry on with a stack that no longer matches what the
-            // compiler thinks is on it and produce a wrong number instead of a
-            // failure.
+            // not an opcode at all — every one in the enum has a case above now.
+            // a byte that got cast into an Opcode without being one is the only
+            // way to land here, so the number is more use in the message than
+            // opcode_name would be, since it has nothing to name.
             //
-            // this one is a hole in the VM and not a mistake in the program, so
-            // it reads as such. no user should ever see it once the phase is
-            // finished, but until then a wrong-looking message beats a silent
-            // stop with nothing to say.
-            return fail(opcode_name(op) + " is not implemented yet", chunk);
+            // stopping is the point. skipping the byte would carry on reading
+            // instructions from whatever offset it happened to leave ip_ at,
+            // which is how a chunk starts producing wrong answers instead of a
+            // failure.
+            return fail("unknown opcode " + std::to_string(static_cast<int>(op)), *code);
         }
     }
 
@@ -474,17 +570,41 @@ InterpretResult VM::fail(const std::string& message, const Chunk& chunk) {
     // is 0 rather than printing a made-up one, so the reader is told the line and
     // no more than the VM actually knows.
     //
-    // the trace is empty for the same reason: there is only ever the top level to
-    // be in until step 82 gives the VM call frames, and an empty one already
-    // prints as no stack section at all.
-    error_ = RuntimeError(message, chunk.line_at(offset), 0, {});
+    // the trace is taken before the frames are dropped below, which is the whole
+    // reason it is copied into the error instead of being read off the VM later.
+    // an error at the top level has no frames and gives back an empty one, and
+    // format_error prints that as no stack section at all.
+    error_ = RuntimeError(message, chunk.line_at(offset), 0, call_trace());
 
-    // drop whatever the half-finished expression had pushed. the repl keeps one
-    // VM for the whole session, so leaving it there would put the next line's
-    // operands on top of junk and quietly give it the wrong operands to work
-    // with.
+    // drop whatever the half-finished expression had pushed, and the frames it
+    // was pushed inside. the repl keeps one VM for the whole session, so leaving
+    // either behind would put the next line's operands on top of junk and run it
+    // inside a call that already gave up.
     stack_.clear();
+    frames_.clear();
     return InterpretResult::RuntimeError;
+}
+
+std::size_t VM::frame_depth() const { return frames_.size(); }
+
+std::size_t VM::frame_base() const {
+    // the top level is not a frame, so its locals are counted from the bottom of
+    // the stack. that is the same answer the VM gave before calls existed, which
+    // is why none of the old local tests had to change.
+    if (frames_.empty()) return 0;
+    return frames_.back().slot_base;
+}
+
+std::vector<TraceFrame> VM::call_trace() const {
+    std::vector<TraceFrame> trace;
+    trace.reserve(frames_.size());
+    for (const CallFrame& frame : frames_) {
+        // outermost first, matching the order Interpreter::visit_call pushes onto
+        // call_stack_. format_error walks whatever it is given backwards, so
+        // handing it this the other way up would print the trace inside out.
+        trace.push_back(TraceFrame{frame.fn->name, frame.call_line});
+    }
+    return trace;
 }
 
 const Value& VM::stack_top() const {

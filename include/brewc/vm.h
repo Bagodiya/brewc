@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -24,6 +25,33 @@ enum class InterpretResult {
     RuntimeError,
 };
 
+// one call that is currently running. the frames sit in a stack of their own,
+// next to the value stack rather than mixed into it, which is what keeps a
+// return from having to search for where the caller left off.
+//
+// fn is held by shared_ptr and not by a raw Chunk pointer, because the chunk the
+// VM is reading instructions out of lives inside it. the same function is also
+// sitting on the value stack underneath its arguments, but a body is free to
+// write over that slot, so the frame keeping its own reference is what stops the
+// code being executed from being freed halfway through executing it.
+//
+// return_ip is the caller's ip, not this frame's. the VM only ever runs one
+// chunk at a time and ip_ already tracks where it is in that one, so the thing
+// worth writing down is where to carry on once this call is finished.
+//
+// slot_base is where the callee ended up on the value stack. every local in the
+// body is counted from there, so the same GetLocal 1 means a different value in
+// each frame and a function can call itself without anything being renamed.
+//
+// call_line is the source line the call was written on, kept for the stack trace
+// and nothing else — the line inside the body is already in the chunk.
+struct CallFrame {
+    std::shared_ptr<CompiledFn> fn;
+    std::size_t return_ip = 0;
+    std::size_t slot_base = 0;
+    int call_line = 0;
+};
+
 // runs a compiled chunk. the tree-walker asks each AST node what it is and then
 // dispatches on the answer; this reads a byte, jumps on it, and moves to the next
 // one, which is the whole point of having compiled the tree in the first place.
@@ -34,10 +62,10 @@ enum class InterpretResult {
 // emits left before right, and why every visit_* in it leaves exactly one value
 // behind — the two halves only fit together if both sides keep that promise.
 //
-// Const, Nil, True, False, Return, Pop, the arithmetic opcodes, the comparisons,
-// the globals, the locals and the two forward jumps are implemented here. the rest stop the run
-// with a RuntimeError instead of falling through to something worse, and get
-// filled in one group at a time over the next steps.
+// every opcode the compiler emits has a case in the dispatch loop now. Return is
+// the one that is only half done: it stops the run instead of handing a value
+// back to the caller, so a call reaches the body and the body's Return ends the
+// whole program. step 83 unwinds the frame properly.
 class VM {
 public:
     VM();
@@ -61,6 +89,11 @@ public:
     // and it is this one" — a run that pushed twice and popped once is wrong even
     // when the top of the stack looks right.
     std::size_t stack_size() const;
+
+    // how many calls are in flight. the tests want this to tell a call that
+    // pushed a frame from one that was refused before it got that far, since
+    // both leave the stack looking much the same.
+    std::size_t frame_depth() const;
 
     // what a global is bound to, or null if that name was never defined. for the
     // tests, same as stack_top — a `let` leaves nothing on the stack, so without
@@ -110,7 +143,38 @@ private:
     // without consuming it.
     const Value& peek(std::size_t distance) const;
 
+    // where the running frame's slot 0 sits on the value stack. the top level is
+    // not a frame and its locals start at 0, so an empty frame stack answers 0
+    // and GetLocal keeps meaning what it did before calls existed.
+    std::size_t frame_base() const;
+
+    // the frames as a trace, outermost call first — the order the interpreter
+    // builds call_stack_ in, since format_error walks it backwards to print the
+    // innermost one at the top.
+    std::vector<TraceFrame> call_trace() const;
+
+    // how deep the calls are allowed to get. a runaway recursion has to be
+    // caught by something, and a count is the only thing there is to catch it
+    // with: the frames live in a vector on the heap, so the C++ stack never runs
+    // out and the process would just grow until the allocator gave up.
+    //
+    // 256 is a guess in the same spirit as the stack reserve below — deeper than
+    // any sensible program and shallow enough that a mistake is reported in no
+    // time. the tree-walker has no equivalent limit, which is why a recursion
+    // that never ends takes the whole process down there and stops cleanly here.
+    static constexpr std::size_t max_frames = 256;
+
     std::vector<Value> stack_;
+
+    // one entry per call that has not returned yet, the caller underneath the
+    // callee. empty means the top level, which is deliberately not a frame of its
+    // own: run() is handed a plain Chunk with no CompiledFn wrapped round it, so
+    // there would be nothing to put in one.
+    //
+    // cleared by run() the same way the stack is. a run that stopped mid-call
+    // left its frames behind, and starting the next chunk inside somebody else's
+    // frame would read locals out of slots that hold nothing.
+    std::vector<CallFrame> frames_;
 
     // every global the program has defined, by name. deliberately not cleared by
     // run(), unlike the stack: the repl keeps one VM for the whole session and

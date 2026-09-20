@@ -47,9 +47,8 @@ private:
 // value is on the stack afterwards.
 //
 // literals, arithmetic, comparisons, logical operators, variables, assignment,
-// blocks, expression statements, if/else, while loops and fn declarations are
-// wired up so far. calls and return are still stubs and get filled in over the
-// next steps.
+// blocks, expression statements, if/else, while loops, fn declarations and calls
+// are wired up so far. return is the last stub and gets filled in next step.
 class Compiler : public Visitor, public StmtVisitor {
 public:
     Compiler();

@@ -4,9 +4,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include "brewc/chunk.h"
 #include "brewc/runtime_error.h"
@@ -56,6 +58,27 @@ void write_jump(Chunk& chunk, Opcode op, uint16_t distance, int line = 1) {
     chunk.write(op, line);
     chunk.write(static_cast<uint8_t>((distance >> 8) & 0xff), line);
     chunk.write(static_cast<uint8_t>(distance & 0xff), line);
+}
+
+// a Call and the byte saying how many arguments were pushed. the count is not a
+// pool index and not a stack slot, so unlike the two helpers above there is
+// nothing to put anywhere first — the arguments have to be on the stack already.
+void write_call(Chunk& chunk, uint8_t argc, int line = 1) {
+    chunk.write(Opcode::Call, line);
+    chunk.write(argc, line);
+}
+
+// a function with a chunk of its own, built the same way the compiler builds one:
+// a body that ends in a Return, an arity, and a name for the error messages. the
+// caller fills the chunk in through the reference this hands back.
+//
+// no Nil in front of the Return, because the VM does not read one yet — a Return
+// stops the run wherever it is until step 83.
+std::shared_ptr<CompiledFn> make_fn(const std::string& name, int arity) {
+    auto fn = std::make_shared<CompiledFn>();
+    fn->name = name;
+    fn->arity = arity;
+    return fn;
 }
 
 } // namespace
@@ -154,15 +177,15 @@ TEST_CASE("the top of an empty stack reads as nil", "[vm]") {
     REQUIRE(is_nil(vm.stack_top()));
 }
 
-TEST_CASE("an opcode this step does not run is an error", "[vm]") {
-    // Call is a real instruction with no case in the dispatch loop until step 82.
-    // stopping is the point: skipping it would leave the stack a value shallower
-    // than the compiler thinks it is and every later instruction would read the
-    // wrong slot.
+TEST_CASE("a byte that is not an opcode at all stops the run", "[vm]") {
+    // every opcode in the enum has a case in the dispatch loop now, so the only
+    // way to reach the default is a byte that was cast into an Opcode without
+    // being one. stopping is the point: skipping it would carry on reading
+    // instructions from wherever it left ip, which produces wrong answers rather
+    // than a failure.
     Chunk chunk;
     write_constant(chunk, int64_t{1});
-    chunk.write(Opcode::Call, 1);
-    chunk.write(static_cast<uint8_t>(0), 1);
+    chunk.write(static_cast<uint8_t>(200), 1);
     chunk.write(Opcode::Return, 1);
 
     VM vm;
@@ -723,18 +746,18 @@ TEST_CASE("negating something that is not a number reports it", "[vm]") {
     REQUIRE(vm.error()->line() == 6);
 }
 
-TEST_CASE("an opcode with no case yet says which one it was", "[vm]") {
-    // Call has no case until step 82. the message is about the VM and not about
-    // the program, but a stop with nothing to say is worse to run into.
+TEST_CASE("an unknown byte is reported with the number it was", "[vm]") {
+    // opcode_name would have nothing to name here, so the message carries the
+    // byte itself. it is about the chunk being wrong rather than the program, but
+    // a stop with nothing to say is worse to run into.
     Chunk chunk;
     write_constant(chunk, int64_t{1}, 4);
-    chunk.write(Opcode::Call, 4);
-    chunk.write(static_cast<uint8_t>(0), 4);
+    chunk.write(static_cast<uint8_t>(200), 4);
 
     VM vm;
     REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
     REQUIRE(vm.error() != nullptr);
-    REQUIRE(std::string(vm.error()->what()) == "Call is not implemented yet");
+    REQUIRE(std::string(vm.error()->what()) == "unknown opcode 200");
     REQUIRE(vm.error()->line() == 4);
 }
 
@@ -1388,4 +1411,238 @@ TEST_CASE("a Loop back to offset zero is allowed", "[vm]") {
     REQUIRE(vm.run(chunk) == InterpretResult::Ok);
     REQUIRE(std::get<int64_t>(vm.stack_top()) == 5);
     REQUIRE(std::get<bool>(*vm.global("go")) == false);
+}
+
+TEST_CASE("a Call runs the body of the function it names", "[vm]") {
+    // the body defines a global, which is the only mark it can leave that
+    // outlives the run — its Return stops the VM where it stands until step 83,
+    // so there is nothing to read off the stack afterwards.
+    auto fn = make_fn("setup", 0);
+    write_constant(fn->chunk, int64_t{7});
+    write_global(fn->chunk, Opcode::DefineGlobal, "out");
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, Value{fn});
+    write_call(chunk, 0);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.global("out") != nullptr);
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 7);
+}
+
+TEST_CASE("a call leaves the callee and its arguments where they are", "[vm]") {
+    // nothing is copied or rearranged to set a call up. the callee is already
+    // sitting under its arguments, so the frame just writes down where it starts
+    // and the body reads them as slots 0..n.
+    auto fn = make_fn("take", 2);
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, Value{fn});
+    write_constant(chunk, int64_t{1});
+    write_constant(chunk, int64_t{2});
+    write_call(chunk, 2);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.frame_depth() == 1);
+    REQUIRE(vm.stack_size() == 3);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 2);
+}
+
+TEST_CASE("a parameter is read out of the frame and not off the bottom", "[vm]") {
+    // the dummy at slot 0 is what makes this worth checking. the argument is at
+    // absolute slot 2, and the body asks for slot 1 — it only finds the 5 because
+    // the frame told it where to start counting.
+    auto fn = make_fn("first", 1);
+    write_local(fn->chunk, Opcode::GetLocal, 1);
+    write_global(fn->chunk, Opcode::DefineGlobal, "got");
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, int64_t{99});
+    write_constant(chunk, Value{fn});
+    write_constant(chunk, int64_t{5});
+    write_call(chunk, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.global("got") != nullptr);
+    REQUIRE(std::get<int64_t>(*vm.global("got")) == 5);
+}
+
+TEST_CASE("slot 0 of a frame is the function itself", "[vm]") {
+    // compile_function reserves it under an empty name so nothing in the source
+    // can reach it, but the slot is really there and holds the callee.
+    auto fn = make_fn("self", 0);
+    write_local(fn->chunk, Opcode::GetLocal, 0);
+    write_global(fn->chunk, Opcode::DefineGlobal, "me");
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, Value{fn});
+    write_call(chunk, 0);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.global("me") != nullptr);
+    REQUIRE(is_compiled_fn(*vm.global("me")));
+}
+
+TEST_CASE("calling something that is not a function is reported", "[vm]") {
+    // word for word what Interpreter::visit_call says, so a user cannot tell
+    // which backend ran their program from the message they got.
+    Chunk chunk;
+    write_constant(chunk, int64_t{3}, 2);
+    write_call(chunk, 0, 2);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(std::string(vm.error()->what()) == "can only call functions, not int");
+    REQUIRE(vm.error()->line() == 2);
+}
+
+TEST_CASE("too few arguments is reported against the arity", "[vm]") {
+    auto fn = make_fn("add", 2);
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, Value{fn}, 9);
+    write_constant(chunk, int64_t{1}, 9);
+    write_call(chunk, 1, 9);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+    REQUIRE(std::string(vm.error()->what()) ==
+            "function 'add' takes 2 arguments but got 1");
+    REQUIRE(vm.error()->line() == 9);
+}
+
+TEST_CASE("too many arguments is the same complaint", "[vm]") {
+    // the count is checked against arity either way round, so an extra argument
+    // is as much an error as a missing one rather than being ignored.
+    auto fn = make_fn("one", 1);
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, Value{fn});
+    write_constant(chunk, int64_t{1});
+    write_constant(chunk, int64_t{2});
+    write_call(chunk, 2);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(std::string(vm.error()->what()) ==
+            "function 'one' takes 1 arguments but got 2");
+}
+
+TEST_CASE("a refused call does not push a frame", "[vm]") {
+    // the checks all run before the frame goes on, so an error leaves nothing
+    // behind for the next run to trip over.
+    auto fn = make_fn("two", 2);
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, Value{fn});
+    write_call(chunk, 0);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.frame_depth() == 0);
+}
+
+TEST_CASE("a call wanting more arguments than the stack holds is caught", "[vm]") {
+    // only a hand-built chunk gets here, since the compiler counts the arguments
+    // it emitted. peek would answer the ones it cannot reach with nil and then
+    // complain about calling a nil, which is the wrong mistake to report.
+    Chunk chunk;
+    write_constant(chunk, int64_t{1}, 3);
+    write_call(chunk, 4, 3);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(std::string(vm.error()->what()) ==
+            "call wants 4 arguments but the stack only holds 1");
+}
+
+TEST_CASE("recursion with no way out stops at the frame limit", "[vm]") {
+    // the C++ stack is not what runs out here — the frames are a vector and the
+    // dispatch loop never calls itself — so without the cap this would grow until
+    // the allocator gave up.
+    auto fn = make_fn("spin", 0);
+    write_global(fn->chunk, Opcode::GetGlobal, "spin");
+    write_call(fn->chunk, 0);
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, Value{fn});
+    write_global(chunk, Opcode::DefineGlobal, "spin");
+    write_global(chunk, Opcode::GetGlobal, "spin");
+    write_call(chunk, 0);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(std::string(vm.error()->what()) == "stack overflow");
+}
+
+TEST_CASE("an error inside a call carries the trace out with it", "[vm]") {
+    // step 73 left the trace empty because there were no frames to walk. this is
+    // the same report the tree-walker prints, innermost call first.
+    auto inner = make_fn("inner", 0);
+    write_constant(inner->chunk, int64_t{1}, 20);
+    write_constant(inner->chunk, int64_t{0}, 20);
+    inner->chunk.write(Opcode::Div, 20);
+
+    auto outer = make_fn("outer", 0);
+    write_constant(outer->chunk, Value{inner}, 10);
+    write_call(outer->chunk, 0, 10);
+
+    Chunk chunk;
+    write_constant(chunk, Value{outer}, 3);
+    write_call(chunk, 0, 3);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error() != nullptr);
+
+    const std::vector<TraceFrame>& trace = vm.error()->trace();
+    REQUIRE(trace.size() == 2);
+    REQUIRE(trace[0].fn_name == "outer");
+    REQUIRE(trace[0].call_line == 3);
+    REQUIRE(trace[1].fn_name == "inner");
+    REQUIRE(trace[1].call_line == 10);
+
+    REQUIRE(format_error(*vm.error()) ==
+            "runtime error: division by zero (line 20)\n"
+            "stack trace:\n"
+            "  in inner() called from line 10\n"
+            "  in outer() called from line 3");
+}
+
+TEST_CASE("a failed run leaves no frames for the next one", "[vm]") {
+    // the repl keeps one VM for the whole session, so a line that died inside a
+    // call must not leave the next line running in that call's slots.
+    auto fn = make_fn("bad", 0);
+    write_constant(fn->chunk, std::string("x"));
+    fn->chunk.write(Opcode::Negate, 1);
+
+    Chunk chunk;
+    write_constant(chunk, Value{fn});
+    write_call(chunk, 0);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.frame_depth() == 0);
+
+    Chunk second;
+    write_constant(second, int64_t{4});
+    second.write(Opcode::Return, 1);
+    REQUIRE(vm.run(second) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 4);
 }
