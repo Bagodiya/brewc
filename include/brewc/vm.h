@@ -62,10 +62,9 @@ struct CallFrame {
 // emits left before right, and why every visit_* in it leaves exactly one value
 // behind — the two halves only fit together if both sides keep that promise.
 //
-// every opcode the compiler emits has a case in the dispatch loop now. Return is
-// the one that is only half done: it stops the run instead of handing a value
-// back to the caller, so a call reaches the body and the body's Return ends the
-// whole program. step 83 unwinds the frame properly.
+// every opcode the compiler emits has a case in the dispatch loop now. a Return
+// inside a call drops the frame and carries on in the caller; only the one at
+// the top level ends the run.
 class VM {
 public:
     VM();

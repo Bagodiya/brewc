@@ -518,17 +518,29 @@ InterpretResult VM::run(const Chunk& chunk) {
             break;
         }
 
-        case Opcode::Return:
-            // step 83 makes this hand a value back to the caller and carry on in
-            // the chunk the frame remembers. until then it stops the run wherever
-            // it is, so a call reaches its body and the body ends the program —
-            // which is enough to see a frame being pushed and its locals being
-            // read, and not enough to see one being dropped.
-            //
-            // at the top level this is what it always was: stopping without
-            // popping is what leaves the program's result on the stack for
-            // stack_top to report.
-            return InterpretResult::Ok;
+        case Opcode::Return: {
+            // at the top level this stops the run without popping, so the
+            // program's result stays on the stack for stack_top.
+            if (frames_.empty()) {
+                return InterpretResult::Ok;
+            }
+
+            // inside a call: take the result, throw away everything from the
+            // callee's slot 0 up (args, locals, whatever a loop left mid-way),
+            // and put the result where the callee used to be.
+            Value result = pop();
+            CallFrame frame = std::move(frames_.back());
+            frames_.pop_back();
+
+            stack_.resize(frame.slot_base);
+            push(std::move(result));
+
+            // back to whoever called. if there is no frame left it was the
+            // top level, which is the chunk run() was handed.
+            code = frames_.empty() ? &chunk : &frames_.back().fn->chunk;
+            ip_ = frame.return_ip;
+            break;
+        }
 
         default:
             // not an opcode at all — every one in the enum has a case above now.

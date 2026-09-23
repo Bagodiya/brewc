@@ -232,6 +232,10 @@ private:
     // that somehow emits before any node is visited still has a sane line rather
     // than a zero the error reporter would have to special-case.
     int line_ = 1;
+
+    // true while compiling a fn body. a `return` at the top level has no frame
+    // to go back to, so visit_return checks this.
+    bool in_function_ = false;
 };
 
 } // namespace brewc

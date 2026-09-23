@@ -1414,9 +1414,7 @@ TEST_CASE("a Loop back to offset zero is allowed", "[vm]") {
 }
 
 TEST_CASE("a Call runs the body of the function it names", "[vm]") {
-    // the body defines a global, which is the only mark it can leave that
-    // outlives the run — its Return stops the VM where it stands until step 83,
-    // so there is nothing to read off the stack afterwards.
+    // the body defines a global so there's something to check after the run.
     auto fn = make_fn("setup", 0);
     write_constant(fn->chunk, int64_t{7});
     write_global(fn->chunk, Opcode::DefineGlobal, "out");
@@ -1437,8 +1435,10 @@ TEST_CASE("a call leaves the callee and its arguments where they are", "[vm]") {
     // nothing is copied or rearranged to set a call up. the callee is already
     // sitting under its arguments, so the frame just writes down where it starts
     // and the body reads them as slots 0..n.
+    //
+    // the body is left empty on purpose. with no Return the run just ends
+    // inside the call, so the frame is still there to look at.
     auto fn = make_fn("take", 2);
-    fn->chunk.write(Opcode::Return, 1);
 
     Chunk chunk;
     write_constant(chunk, Value{fn});
@@ -1645,4 +1645,101 @@ TEST_CASE("a failed run leaves no frames for the next one", "[vm]") {
     REQUIRE(vm.run(second) == InterpretResult::Ok);
     REQUIRE(vm.stack_size() == 1);
     REQUIRE(std::get<int64_t>(vm.stack_top()) == 4);
+}
+
+TEST_CASE("Return inside a call puts the result where the callee was", "[vm]") {
+    // the 99 underneath is the caller's and has to survive. the fn, the arg and
+    // the local the body pushed all go.
+    auto fn = make_fn("pick", 1);
+    write_constant(fn->chunk, int64_t{8});
+    write_constant(fn->chunk, int64_t{42});
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, int64_t{99});
+    write_constant(chunk, Value{fn});
+    write_constant(chunk, int64_t{5});
+    write_call(chunk, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.frame_depth() == 0);
+    REQUIRE(vm.stack_size() == 2);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 42);
+}
+
+TEST_CASE("the caller picks up right after its Call", "[vm]") {
+    auto fn = make_fn("two", 0);
+    write_constant(fn->chunk, int64_t{2});
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, int64_t{10});
+    write_constant(chunk, Value{fn});
+    write_call(chunk, 0);
+    chunk.write(Opcode::Mul, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 20);
+}
+
+TEST_CASE("a nested call returns into the middle fn and not the top", "[vm]") {
+    // inner returns 3, outer adds 1 to it, the top level adds 100. if inner
+    // went back to the wrong chunk the Add in outer would never run.
+    auto inner = make_fn("inner", 0);
+    write_constant(inner->chunk, int64_t{3});
+    inner->chunk.write(Opcode::Return, 1);
+
+    auto outer = make_fn("outer", 0);
+    write_constant(outer->chunk, Value{inner});
+    write_call(outer->chunk, 0);
+    write_constant(outer->chunk, int64_t{1});
+    outer->chunk.write(Opcode::Add, 1);
+    outer->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, Value{outer});
+    write_call(chunk, 0);
+    write_constant(chunk, int64_t{100});
+    chunk.write(Opcode::Add, 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.frame_depth() == 0);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 104);
+}
+
+TEST_CASE("a Return at the top level still just stops", "[vm]") {
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    chunk.write(Opcode::Return, 1);
+    write_constant(chunk, int64_t{2});
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 1);
+}
+
+TEST_CASE("an error after a return has no frame left in its trace", "[vm]") {
+    // the frame is gone once the call returned, so the trace has to be empty.
+    auto fn = make_fn("ok", 0);
+    fn->chunk.write(Opcode::Nil, 1);
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, Value{fn});
+    write_call(chunk, 0);
+    chunk.write(Opcode::Negate, 5);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(vm.error()->trace().empty());
+    REQUIRE(vm.error()->line() == 5);
 }

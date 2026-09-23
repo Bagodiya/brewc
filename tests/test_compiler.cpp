@@ -143,12 +143,6 @@ TEST_CASE("a fresh chunk starts with an empty constant pool", "[compiler]") {
     REQUIRE(chunk.constants.empty());
 }
 
-TEST_CASE("statements compile without the stubs blowing up", "[compiler]") {
-    // return is the last empty visitor. call used to be the other example here
-    // and compiles for real now, it's down with the call tests.
-    REQUIRE_NOTHROW(compile_source("fn add(a, b) { return a + b }"));
-}
-
 TEST_CASE("nested blocks are walked all the way down", "[compiler]") {
     // the top level is just Const, DefineGlobal, Return. everything else ended up
     // in the function's own chunk, so that's where the loop has to be.
@@ -1398,9 +1392,10 @@ TEST_CASE("a fn declaration compiles into a function with its own chunk", "[comp
     REQUIRE(fn->arity == 2);
     REQUIRE(fn->upvalue_count == 0);
 
-    // an empty body is still a chunk the VM can stop in.
-    REQUIRE(fn->chunk.size() == 1);
-    REQUIRE(op_at(fn->chunk, 0) == Opcode::Return);
+    // an empty body still returns something, nil.
+    REQUIRE(fn->chunk.size() == 2);
+    REQUIRE(op_at(fn->chunk, 0) == Opcode::Nil);
+    REQUIRE(op_at(fn->chunk, 1) == Opcode::Return);
 }
 
 TEST_CASE("a fn with no params has arity 0", "[compiler]") {
@@ -1417,7 +1412,8 @@ TEST_CASE("the body ends up in the function's chunk and not the outer one", "[co
     const Chunk& body = fn_at(chunk, 0)->chunk;
     REQUIRE(op_at(body, 4) == Opcode::Add);
     REQUIRE(op_at(body, 5) == Opcode::Pop);
-    REQUIRE(op_at(body, 6) == Opcode::Return);
+    REQUIRE(op_at(body, 6) == Opcode::Nil);
+    REQUIRE(op_at(body, 7) == Opcode::Return);
 
     // the body's literals go in the body's pool too, the outer one only has the
     // function and its name.
@@ -1628,8 +1624,6 @@ TEST_CASE("255 arguments is fine but 256 is a compile error", "[compiler]") {
 
 TEST_CASE("a compiled call runs the function it names", "[compiler]") {
     // the whole way through for once: source to bytecode to a frame the VM runs.
-    // the body writes to a global because its Return stops the VM where it
-    // stands until step 83, so there is nothing left on the stack to look at.
     VM vm;
     run_source(vm, "let out = 0\nfn f(a) { out = a }\nf(7)");
 
@@ -1649,4 +1643,115 @@ TEST_CASE("a local in a fn body sits above the parameters", "[compiler]") {
     VM vm;
     run_source(vm, "let out = 0\nfn f(a) { let twice = a + a out = twice }\nf(6)");
     REQUIRE(std::get<int64_t>(*vm.global("out")) == 12);
+}
+
+TEST_CASE("return compiles its value and then Return", "[compiler]") {
+    Chunk chunk = compile_source("fn f(a) { return a }");
+    const Chunk& body = fn_at(chunk, 0)->chunk;
+    REQUIRE(op_at(body, 0) == Opcode::GetLocal);
+    REQUIRE(op_at(body, 2) == Opcode::Return);
+}
+
+TEST_CASE("a bare return pushes nil first", "[compiler]") {
+    Chunk chunk = compile_source("fn f() { return }");
+    const Chunk& body = fn_at(chunk, 0)->chunk;
+    REQUIRE(op_at(body, 0) == Opcode::Nil);
+    REQUIRE(op_at(body, 1) == Opcode::Return);
+}
+
+TEST_CASE("return at the top level is a compile error", "[compiler]") {
+    REQUIRE_THROWS_AS(compile_source("return 1"), CompileError);
+
+    // same words the interpreter uses, pointed at the keyword.
+    try {
+        compile_source("{\n  return }");
+        FAIL("expected a CompileError");
+    } catch (const CompileError& err) {
+        REQUIRE(std::string(err.what()) == "line 2:3: 'return' outside of a function");
+    }
+}
+
+TEST_CASE("a return after a fn body doesn't count as inside it", "[compiler]") {
+    // the body gets its own Compiler, so the flag can't leak back out.
+    REQUIRE_THROWS_AS(compile_source("fn f() { return 1 }\nreturn 2"), CompileError);
+}
+
+TEST_CASE("a call gives back the returned value", "[compiler]") {
+    VM vm;
+    run_source(vm, "fn add(a, b) { return a + b }\nlet out = add(3, 4)");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 7);
+}
+
+TEST_CASE("a bare return and falling off the end both give nil", "[compiler]") {
+    VM vm;
+    run_source(vm, "fn a() { return }\nfn b() { 1 + 1 }\nlet x = a()\nlet y = b()");
+    REQUIRE(is_nil(*vm.global("x")));
+    REQUIRE(is_nil(*vm.global("y")));
+}
+
+TEST_CASE("return leaves the stack the way the caller had it", "[compiler]") {
+    // the callee, its args and its locals all go, only the result is left and
+    // the expression statement pops that.
+    VM vm;
+    run_source(vm, "fn f(a, b) { let c = a * b return c }\nf(2, 3)\nf(4, 5)");
+    REQUIRE(vm.stack_size() == 0);
+    REQUIRE(vm.frame_depth() == 0);
+}
+
+TEST_CASE("return from inside nested loops and blocks", "[compiler]") {
+    // the loops have locals of their own on the stack when the return hits, and
+    // nothing pops them one by one.
+    VM vm;
+    run_source(vm,
+               "fn find(limit) {\n"
+               "  let i = 0\n"
+               "  while i < limit {\n"
+               "    let j = 0\n"
+               "    while j < limit {\n"
+               "      { let prod = i * j\n"
+               "        if prod == 12 { return i * 100 + j } }\n"
+               "      j = j + 1\n"
+               "    }\n"
+               "    i = i + 1\n"
+               "  }\n"
+               "  return -1\n"
+               "}\n"
+               "let hit = find(10)\n"
+               "let miss = find(3)");
+    REQUIRE(std::get<int64_t>(*vm.global("hit")) == 206);
+    REQUIRE(std::get<int64_t>(*vm.global("miss")) == -1);
+    REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("recursive factorial(5) is 120", "[compiler]") {
+    VM vm;
+    run_source(vm,
+               "fn factorial(n) {\n"
+               "  if n <= 1 { return 1 }\n"
+               "  return n * factorial(n - 1)\n"
+               "}\n"
+               "let out = factorial(5)");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 120);
+}
+
+TEST_CASE("fib works with two recursive calls per frame", "[compiler]") {
+    VM vm;
+    run_source(vm,
+               "fn fib(n) { if n < 2 { return n } return fib(n - 1) + fib(n - 2) }\n"
+               "let out = fib(15)");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 610);
+}
+
+TEST_CASE("the caller carries on after the call returns", "[compiler]") {
+    // code after the call in the same statement and in the next one both run.
+    VM vm;
+    run_source(vm, "fn one() { return 1 }\nlet out = one() + one() + 10\nout = out * 2");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 24);
+}
+
+TEST_CASE("a fn declared in a block can be called and returned from", "[compiler]") {
+    VM vm;
+    run_source(vm, "let out = 0\n{ let base = 5 fn sq(x) { return x * x } out = sq(3) + base }");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 14);
+    REQUIRE(vm.stack_size() == 0);
 }

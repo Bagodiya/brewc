@@ -143,6 +143,7 @@ void Compiler::compile_stmt(Stmt& stmt) { stmt.accept(*this); }
 std::shared_ptr<CompiledFn> Compiler::compile_function(FnDecl& decl) {
     reset();
     set_line(decl.name_token);
+    in_function_ = true;
 
     // the whole body is one scope deeper than the top level, so every `let` in
     // it is a local and not a global.
@@ -162,8 +163,8 @@ std::shared_ptr<CompiledFn> Compiler::compile_function(FnDecl& decl) {
 
     // no end_scope. the params and slot 0 get thrown away when the frame is
     // dropped on return, popping them one at a time here would be wasted work.
-    // just a Return for now so the VM never runs off the end of the chunk, the
-    // implicit nil in front of it is step 83.
+    // falling off the end of a body gives back nil, same as the tree-walker.
+    emit(Opcode::Nil);
     emit(Opcode::Return);
 
     auto fn = std::make_shared<CompiledFn>();
@@ -185,6 +186,7 @@ void Compiler::reset() {
     // locals still listed would resolve names to slots that hold nothing.
     locals_.clear();
     scope_depth_ = 0;
+    in_function_ = false;
 }
 
 void Compiler::emit(Opcode op) { chunk_.write(op, line_); }
@@ -829,10 +831,26 @@ void Compiler::visit_call(CallExpr& expr) {
     emit(Opcode::Call, static_cast<uint8_t>(expr.args.size()));
 }
 
-// still a stub until the step that fills it in. the parameter is cast to void so
-// -Wunused-parameter stays quiet without the name disappearing from the
-// signature, which would make the diff in that step harder to read.
+// `return x` or a bare `return`. the value goes on the stack and Return hands it
+// back to the caller. no Pops for the locals in between, even from inside a
+// loop or a nested block — the VM cuts the stack back to the frame base anyway.
+//
+// the interpreter only complains about a top level return when it runs into
+// one. here we know at compile time, so it's a CompileError with the same text.
+void Compiler::visit_return(ReturnStmt& stmt) {
+    if (!in_function_) {
+        fail("'return' outside of a function", stmt.keyword);
+    }
 
-void Compiler::visit_return(ReturnStmt& stmt) { (void)stmt; }
+    if (stmt.value) {
+        compile_expr(*stmt.value);
+    } else {
+        set_line(stmt.keyword);
+        emit(Opcode::Nil);
+    }
+
+    set_line(stmt.keyword);
+    emit(Opcode::Return);
+}
 
 } // namespace brewc
