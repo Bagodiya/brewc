@@ -45,8 +45,12 @@ enum class InterpretResult {
 //
 // call_line is the source line the call was written on, kept for the stack trace
 // and nothing else — the line inside the body is already in the chunk.
+//
+// closure is set when the thing called was a Closure and null when it was a
+// plain CompiledFn. GetUpvalue/SetUpvalue read the upvalues out of it.
 struct CallFrame {
     std::shared_ptr<CompiledFn> fn;
+    std::shared_ptr<Closure> closure;
     std::size_t return_ip = 0;
     std::size_t slot_base = 0;
     int call_line = 0;
@@ -93,6 +97,10 @@ public:
     // pushed a frame from one that was refused before it got that far, since
     // both leave the stack looking much the same.
     std::size_t frame_depth() const;
+
+    // how many upvalues are still open. for the tests, to check a block or a
+    // return actually closed what it captured.
+    std::size_t open_upvalue_count() const;
 
     // what a global is bound to, or null if that name was never defined. for the
     // tests, same as stack_top — a `let` leaves nothing on the stack, so without
@@ -152,6 +160,19 @@ private:
     // innermost one at the top.
     std::vector<TraceFrame> call_trace() const;
 
+    // the upvalue for this stack slot. if one is already open for it that one
+    // is handed back, so every closure over the same variable shares it.
+    std::shared_ptr<Upvalue> capture_upvalue(std::size_t slot);
+
+    // close every open upvalue at or above this slot: copy the value out of the
+    // stack into the upvalue and take it off the open list. called right before
+    // those slots are dropped.
+    void close_upvalues(std::size_t from_slot);
+
+    // the value an upvalue stands for right now, on the stack if it's still
+    // open and inside the upvalue if not.
+    Value& upvalue_value(Upvalue& upvalue);
+
     // how deep the calls are allowed to get. a runaway recursion has to be
     // caught by something, and a count is the only thing there is to catch it
     // with: the frames live in a vector on the heap, so the C++ stack never runs
@@ -174,6 +195,10 @@ private:
     // left its frames behind, and starting the next chunk inside somebody else's
     // frame would read locals out of slots that hold nothing.
     std::vector<CallFrame> frames_;
+
+    // upvalues still pointing at a live stack slot, sorted by slot with the
+    // lowest first. closing from some slot up is then just chopping the tail.
+    std::vector<std::shared_ptr<Upvalue>> open_upvalues_;
 
     // every global the program has defined, by name. deliberately not cleared by
     // run(), unlike the stack: the repl keeps one VM for the whole session and

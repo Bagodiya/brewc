@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -81,6 +82,15 @@ enum class Opcode : uint8_t {
     // back to whoever called us.
     Call,
     Return,
+
+    // closures. Closure takes a pool index for the CompiledFn, then two bytes per
+    // upvalue (is_local, index). Get/SetUpvalue take the upvalue's index in the
+    // running closure. CloseUpvalue is a Pop for a local some closure captured,
+    // it moves the value off the stack before dropping the slot.
+    Closure,
+    GetUpvalue,
+    SetUpvalue,
+    CloseUpvalue,
 };
 
 // the name of an opcode as written in the enum, for the disassembler and for test
@@ -148,13 +158,40 @@ struct Chunk {
 // instead of being spliced into the one around it, so the outer code doesn't run
 // it on the way past and a call (step 82) has something to point ip at.
 //
-// arity is checked against the argument count at the call. upvalue_count stays 0
-// until closures show up in step 84.
+// arity is checked against the argument count at the call. upvalue_count is how
+// many outer variables the body uses, and so how many (is_local, index) pairs
+// come after the Closure instruction that makes it.
 struct CompiledFn {
     Chunk chunk;
     int arity = 0;
     std::string name;
     int upvalue_count = 0;
+};
+
+// one variable a closure captured. while the variable's slot is still on the
+// stack the upvalue is open and just remembers the slot, so writes through the
+// closure and writes through the local hit the same value. once the slot goes
+// away (end of block or the fn returns) it gets closed: the value is copied into
+// `closed` and from then on that copy is the variable.
+//
+// plan.md has a Value* into the stack here. the stack is a std::vector though,
+// and a push that makes it reallocate would leave every open upvalue pointing at
+// freed memory, so it's a slot number instead.
+struct Upvalue {
+    std::size_t slot = 0;
+    bool open = true;
+    Value closed;
+};
+
+// a fn plus the variables it captured. two closures made from the same outer
+// variable hold the same Upvalue (shared_ptr), that's how a change made by one
+// is seen by the other.
+//
+// a fn that captures nothing is never wrapped in one of these, the compiler
+// just pushes the CompiledFn with a Const like before.
+struct Closure {
+    std::shared_ptr<CompiledFn> fn;
+    std::vector<std::shared_ptr<Upvalue>> upvalues;
 };
 
 } // namespace brewc

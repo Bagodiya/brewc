@@ -122,3 +122,17 @@ TEST_CASE("the other variants don't claim to be a compiled fn", "[value]") {
     REQUIRE_FALSE(is_compiled_fn(Value{std::string("fn")}));
     REQUIRE(to_string(Value{2.5}) == "2.5");
 }
+
+TEST_CASE("a closure is a function named after its fn", "[value]") {
+    auto fn = std::make_shared<CompiledFn>();
+    fn->name = "tick";
+    auto closure = std::make_shared<Closure>();
+    closure->fn = fn;
+
+    Value v = closure;
+    REQUIRE(is_closure(v));
+    REQUIRE_FALSE(is_compiled_fn(v));
+    REQUIRE(type_name(v) == "function");
+    REQUIRE(to_string(v) == "<fn tick>");
+    REQUIRE_FALSE(is_closure(Value{fn}));
+}

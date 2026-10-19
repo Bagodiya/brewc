@@ -58,9 +58,9 @@ std::size_t constant(const Chunk& chunk, Opcode op, std::size_t offset, std::ost
     return offset + 2;
 }
 
-// GetLocal, SetLocal and Call. all take one byte that means a number — a stack
-// slot for the first two, an argument count for Call — and there's nothing to
-// look up, so the byte is printed on its own.
+// GetLocal, SetLocal, Call and the two upvalue ones. all take one byte that
+// means a number — a stack slot, an argument count, an upvalue index — and
+// there's nothing to look up, so the byte is printed on its own.
 std::size_t byte_operand(const Chunk& chunk, Opcode op, std::size_t offset,
                          std::ostringstream& out) {
     write_prefix(chunk, offset, out);
@@ -91,6 +91,32 @@ std::size_t jump(const Chunk& chunk, Opcode op, std::size_t offset, int sign,
     return next;
 }
 
+// how many upvalue pairs follow a Closure. that's not in the instruction, it's
+// in the fn the operand points at, so a bad operand just means no pairs.
+std::size_t closure_pairs(const Chunk& chunk, std::size_t offset) {
+    const Value& fn = chunk.constant_at(chunk.code[offset + 1]);
+    if (!is_compiled_fn(fn)) return 0;
+    return static_cast<std::size_t>(std::get<std::shared_ptr<CompiledFn>>(fn)->upvalue_count);
+}
+
+// Closure prints like a Const and then one extra line per captured variable,
+// saying whether it comes from a local slot of the enclosing fn or from one of
+// its upvalues.
+std::size_t closure(const Chunk& chunk, std::size_t offset, std::ostringstream& out) {
+    std::size_t next = constant(chunk, Opcode::Closure, offset, out);
+
+    std::size_t pairs = closure_pairs(chunk, offset);
+    for (std::size_t i = 0; i < pairs; ++i) {
+        bool is_local = chunk.code[next] != 0;
+        int index = chunk.code[next + 1];
+        out << "\n";
+        write_prefix(chunk, next, out);
+        out << (is_local ? "  local " : "  upvalue ") << index;
+        next += 2;
+    }
+    return next;
+}
+
 // how many bytes an opcode takes up in total, itself included. used to check the
 // stream has them before reading, so a chunk that was cut short mid-instruction
 // gets a complaint instead of an out of bounds read.
@@ -103,6 +129,9 @@ std::size_t instruction_length(Opcode op) {
     case Opcode::GetLocal:
     case Opcode::SetLocal:
     case Opcode::Call:
+    case Opcode::GetUpvalue:
+    case Opcode::SetUpvalue:
+    case Opcode::Closure:
         return 2;
     case Opcode::Jump:
     case Opcode::JumpIfFalse:
@@ -141,7 +170,14 @@ std::size_t disassemble_instruction(const Chunk& chunk, std::size_t offset, std:
     }
 
     Opcode op = static_cast<Opcode>(byte);
-    if (offset + instruction_length(op) > chunk.size()) {
+    // a Closure's pairs are part of it too, but only once the index byte is
+    // there to say how many
+    std::size_t length = instruction_length(op);
+    if (op == Opcode::Closure && offset + length <= chunk.size()) {
+        length += 2 * closure_pairs(chunk, offset);
+    }
+
+    if (offset + length > chunk.size()) {
         write_prefix(chunk, offset, line);
         line << opcode_name(op) << " <truncated>";
         out += line.str();
@@ -161,7 +197,12 @@ std::size_t disassemble_instruction(const Chunk& chunk, std::size_t offset, std:
     case Opcode::GetLocal:
     case Opcode::SetLocal:
     case Opcode::Call:
+    case Opcode::GetUpvalue:
+    case Opcode::SetUpvalue:
         next = byte_operand(chunk, op, offset, line);
+        break;
+    case Opcode::Closure:
+        next = closure(chunk, offset, line);
         break;
     case Opcode::Jump:
     case Opcode::JumpIfFalse:

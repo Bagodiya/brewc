@@ -19,6 +19,9 @@ bool is_native(const Value& value) {
 bool is_compiled_fn(const Value& value) {
     return std::holds_alternative<std::shared_ptr<CompiledFn>>(value);
 }
+bool is_closure(const Value& value) {
+    return std::holds_alternative<std::shared_ptr<Closure>>(value);
+}
 
 std::string type_name(const Value& value) {
     if (is_nil(value)) return "nil";
@@ -57,6 +60,12 @@ std::string to_string(const Value& value) {
     if (is_compiled_fn(value)) {
         const auto& fn = std::get<std::shared_ptr<CompiledFn>>(value);
         return "<fn " + (fn ? fn->name : "?") + ">";
+    }
+
+    // a closure is still just a fn as far as the program is concerned.
+    if (is_closure(value)) {
+        const auto& closure = std::get<std::shared_ptr<Closure>>(value);
+        return "<fn " + (closure && closure->fn ? closure->fn->name : "?") + ">";
     }
 
     // float left. std::to_string would pad it out to six decimals which looks

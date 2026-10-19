@@ -1743,3 +1743,122 @@ TEST_CASE("an error after a return has no frame left in its trace", "[vm]") {
     REQUIRE(vm.error()->trace().empty());
     REQUIRE(vm.error()->line() == 5);
 }
+
+TEST_CASE("Closure pushes a closure for the fn in its operand", "[vm]") {
+    auto fn = make_fn("g", 0);
+
+    Chunk chunk;
+    std::size_t index = chunk.add_constant(Value{fn});
+    chunk.write(Opcode::Closure, 1);
+    chunk.write(static_cast<uint8_t>(index), 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(is_closure(vm.stack_top()));
+    REQUIRE(std::get<std::shared_ptr<Closure>>(vm.stack_top())->fn == fn);
+}
+
+TEST_CASE("Closure on something that is not a fn is reported", "[vm]") {
+    Chunk chunk;
+    std::size_t index = chunk.add_constant(int64_t{3});
+    chunk.write(Opcode::Closure, 4);
+    chunk.write(static_cast<uint8_t>(index), 4);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(std::string(vm.error()->what()) == "closure operand is not a function");
+    REQUIRE(vm.error()->line() == 4);
+}
+
+TEST_CASE("GetUpvalue outside a closure is reported", "[vm]") {
+    Chunk chunk;
+    write_local(chunk, Opcode::GetUpvalue, 0, 2);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::RuntimeError);
+    REQUIRE(std::string(vm.error()->what()) == "upvalue 0 is out of range");
+}
+
+TEST_CASE("a closure reads and writes a captured local", "[vm]") {
+    // top level: slot 0 holds 10, then a closure over slot 0 is called. the
+    // body adds 1 through SetUpvalue and the local on the stack sees it since
+    // the upvalue is still open
+    auto fn = make_fn("bump", 0);
+    fn->upvalue_count = 1;
+    write_local(fn->chunk, Opcode::GetUpvalue, 0);
+    write_constant(fn->chunk, int64_t{1});
+    fn->chunk.write(Opcode::Add, 1);
+    write_local(fn->chunk, Opcode::SetUpvalue, 0);
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, int64_t{10});
+    std::size_t index = chunk.add_constant(Value{fn});
+    chunk.write(Opcode::Closure, 1);
+    chunk.write(static_cast<uint8_t>(index), 1);
+    chunk.write(uint8_t{1}, 1);
+    chunk.write(uint8_t{0}, 1);
+    write_call(chunk, 0);
+    chunk.write(Opcode::Pop, 1);
+    write_local(chunk, Opcode::GetLocal, 0);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 11);
+    REQUIRE(vm.open_upvalue_count() == 1);
+}
+
+TEST_CASE("CloseUpvalue keeps the value after the slot is popped", "[vm]") {
+    // capture slot 0, store the closure in a global, close slot 0 and then
+    // call the closure. it has to still see 7
+    auto fn = make_fn("get", 0);
+    fn->upvalue_count = 1;
+    write_local(fn->chunk, Opcode::GetUpvalue, 0);
+    fn->chunk.write(Opcode::Return, 1);
+
+    Chunk chunk;
+    write_constant(chunk, int64_t{7});
+    std::size_t index = chunk.add_constant(Value{fn});
+    chunk.write(Opcode::Closure, 1);
+    chunk.write(static_cast<uint8_t>(index), 1);
+    chunk.write(uint8_t{1}, 1);
+    chunk.write(uint8_t{0}, 1);
+    write_global(chunk, Opcode::DefineGlobal, "get");
+    chunk.write(Opcode::CloseUpvalue, 1);
+    write_global(chunk, Opcode::GetGlobal, "get");
+    write_call(chunk, 0);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.open_upvalue_count() == 0);
+    REQUIRE(vm.stack_size() == 1);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 7);
+}
+
+TEST_CASE("two Closures over the same slot share one upvalue", "[vm]") {
+    auto fn = make_fn("f", 0);
+    fn->upvalue_count = 1;
+
+    Chunk chunk;
+    write_constant(chunk, int64_t{1});
+    std::size_t index = chunk.add_constant(Value{fn});
+    for (int i = 0; i < 2; ++i) {
+        chunk.write(Opcode::Closure, 1);
+        chunk.write(static_cast<uint8_t>(index), 1);
+        chunk.write(uint8_t{1}, 1);
+        chunk.write(uint8_t{0}, 1);
+    }
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(vm.stack_size() == 3);
+    REQUIRE(vm.open_upvalue_count() == 1);
+
+    auto second = std::get<std::shared_ptr<Closure>>(vm.stack_top());
+    REQUIRE(second->upvalues.size() == 1);
+    REQUIRE(second->upvalues[0]->open);
+}

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include "brewc/chunk.h"
@@ -296,4 +297,60 @@ TEST_CASE("a global missing its operand says so instead of reading past the end"
     std::string line = line_at_offset(chunk, 0);
     REQUIRE(contains(line, "GetGlobal"));
     REQUIRE(contains(line, "truncated"));
+}
+
+TEST_CASE("Closure prints one line per captured variable", "[disassembler]") {
+    auto fn = std::make_shared<CompiledFn>();
+    fn->name = "tick";
+    fn->upvalue_count = 2;
+
+    Chunk chunk;
+    std::size_t index = chunk.add_constant(Value{fn});
+    chunk.write(Opcode::Closure, 1);
+    chunk.write(static_cast<uint8_t>(index), 1);
+    chunk.write(uint8_t{1}, 1);
+    chunk.write(uint8_t{3}, 1);
+    chunk.write(uint8_t{0}, 1);
+    chunk.write(uint8_t{0}, 1);
+    chunk.write(Opcode::Return, 1);
+
+    std::string out;
+    REQUIRE(disassemble_instruction(chunk, 0, out) == 6);
+    REQUIRE(contains(out, "Closure"));
+    REQUIRE(contains(out, "<fn tick>"));
+    REQUIRE(contains(out, "local 3"));
+    REQUIRE(contains(out, "upvalue 0"));
+
+    // the pairs are skipped over and not read as opcodes
+    std::string all = disassemble(chunk, "main");
+    REQUIRE(contains(all, "0006"));
+    REQUIRE(contains(all, "Return"));
+}
+
+TEST_CASE("Closure missing its pairs is truncated", "[disassembler]") {
+    auto fn = std::make_shared<CompiledFn>();
+    fn->upvalue_count = 1;
+
+    Chunk chunk;
+    std::size_t index = chunk.add_constant(Value{fn});
+    chunk.write(Opcode::Closure, 1);
+    chunk.write(static_cast<uint8_t>(index), 1);
+    chunk.write(uint8_t{1}, 1);
+
+    std::string out;
+    disassemble_instruction(chunk, 0, out);
+    REQUIRE(contains(out, "<truncated>"));
+}
+
+TEST_CASE("the upvalue opcodes print their index", "[disassembler]") {
+    Chunk chunk;
+    chunk.write(Opcode::GetUpvalue, 1);
+    chunk.write(uint8_t{2}, 1);
+    chunk.write(Opcode::CloseUpvalue, 1);
+
+    std::string all = disassemble(chunk, "main");
+    REQUIRE(contains(all, "GetUpvalue"));
+    REQUIRE(contains(all, "2"));
+    REQUIRE(contains(all, "0002"));
+    REQUIRE(contains(all, "CloseUpvalue"));
 }

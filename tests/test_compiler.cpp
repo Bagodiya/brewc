@@ -95,7 +95,15 @@ std::size_t instruction_size(const Chunk& chunk, std::size_t offset) {
     case Opcode::GetLocal:
     case Opcode::SetLocal:
     case Opcode::Call:
+    case Opcode::GetUpvalue:
+    case Opcode::SetUpvalue:
         return 2;
+    case Opcode::Closure: {
+        // plus a pair per captured variable, which only the fn knows
+        const Value& fn = chunk.constant_at(chunk.code[offset + 1]);
+        return 2 + 2 * static_cast<std::size_t>(
+                           std::get<std::shared_ptr<CompiledFn>>(fn)->upvalue_count);
+    }
     case Opcode::Jump:
     case Opcode::JumpIfFalse:
     case Opcode::Loop:
@@ -1754,4 +1762,213 @@ TEST_CASE("a fn declared in a block can be called and returned from", "[compiler
     run_source(vm, "let out = 0\n{ let base = 5 fn sq(x) { return x * x } out = sq(3) + base }");
     REQUIRE(std::get<int64_t>(*vm.global("out")) == 14);
     REQUIRE(vm.stack_size() == 0);
+}
+
+TEST_CASE("a fn that captures nothing is still a plain Const", "[compiler]") {
+    // only fns with upvalues get wrapped, everything else stays like step 81
+    Chunk chunk = compile_source("{ let x = 1 fn g() { return 2 } }");
+    REQUIRE(op_at(chunk, 2) == Opcode::Const);
+    REQUIRE(fn_at(chunk, 2)->upvalue_count == 0);
+}
+
+TEST_CASE("using an outer local emits Closure with a local pair", "[compiler]") {
+    // Const x, then Closure <fn> 1 0, then g's slot gets Pop and x's gets
+    // CloseUpvalue since g captured it
+    Chunk chunk = compile_source("{ let x = 1 fn g() { return x } }");
+    REQUIRE(op_at(chunk, 0) == Opcode::Const);
+    REQUIRE(op_at(chunk, 2) == Opcode::Closure);
+
+    const Value& value = chunk.constant_at(chunk.code[3]);
+    REQUIRE(is_compiled_fn(value));
+    auto fn = std::get<std::shared_ptr<CompiledFn>>(value);
+    REQUIRE(fn->upvalue_count == 1);
+
+    REQUIRE(chunk.code[4] == 1);
+    REQUIRE(chunk.code[5] == 0);
+    REQUIRE(op_at(chunk, 6) == Opcode::Pop);
+    REQUIRE(op_at(chunk, 7) == Opcode::CloseUpvalue);
+    REQUIRE(op_at(chunk, 8) == Opcode::Return);
+
+    REQUIRE(op_at(fn->chunk, 0) == Opcode::GetUpvalue);
+    REQUIRE(fn->chunk.code[1] == 0);
+}
+
+TEST_CASE("assigning to an outer local emits SetUpvalue", "[compiler]") {
+    Chunk chunk = compile_source("{ let x = 1 fn g() { x = 2 } }");
+    auto fn = std::get<std::shared_ptr<CompiledFn>>(chunk.constant_at(chunk.code[3]));
+
+    bool found = false;
+    for (std::size_t i = 0; i < fn->chunk.size(); i += instruction_size(fn->chunk, i)) {
+        if (op_at(fn->chunk, i) == Opcode::SetUpvalue) found = true;
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("the same outer variable used twice is one upvalue", "[compiler]") {
+    Chunk chunk = compile_source("{ let x = 1 fn g() { return x + x } }");
+    auto fn = std::get<std::shared_ptr<CompiledFn>>(chunk.constant_at(chunk.code[3]));
+    REQUIRE(fn->upvalue_count == 1);
+}
+
+TEST_CASE("a variable two fns out is passed through the middle one", "[compiler]") {
+    // inner can't see outer's slots, so mid captures x as a local and inner
+    // takes it from mid's upvalues (is_local 0)
+    Chunk chunk = compile_source(
+        "fn outer() { let x = 1 fn mid() { fn inner() { return x } return inner } return mid }");
+    auto outer = fn_at(chunk, 0);
+
+    std::shared_ptr<CompiledFn> mid;
+    for (std::size_t i = 0; i < outer->chunk.size(); i += instruction_size(outer->chunk, i)) {
+        if (op_at(outer->chunk, i) == Opcode::Closure) {
+            mid = std::get<std::shared_ptr<CompiledFn>>(
+                outer->chunk.constant_at(outer->chunk.code[i + 1]));
+            REQUIRE(outer->chunk.code[i + 2] == 1);
+        }
+    }
+    REQUIRE(mid != nullptr);
+    REQUIRE(mid->upvalue_count == 1);
+
+    std::shared_ptr<CompiledFn> inner;
+    for (std::size_t i = 0; i < mid->chunk.size(); i += instruction_size(mid->chunk, i)) {
+        if (op_at(mid->chunk, i) == Opcode::Closure) {
+            inner = std::get<std::shared_ptr<CompiledFn>>(
+                mid->chunk.constant_at(mid->chunk.code[i + 1]));
+            REQUIRE(mid->chunk.code[i + 2] == 0);
+            REQUIRE(mid->chunk.code[i + 3] == 0);
+        }
+    }
+    REQUIRE(inner != nullptr);
+    REQUIRE(inner->upvalue_count == 1);
+}
+
+TEST_CASE("a top level let is still a global inside a fn, not an upvalue", "[compiler]") {
+    Chunk chunk = compile_source("let x = 1\nfn g() { return x }");
+    REQUIRE(fn_at(chunk, 4)->upvalue_count == 0);
+}
+
+TEST_CASE("closure counter gives 1 2 3 1 like the tree-walker", "[compiler]") {
+    // same program as examples/closure_counter.brew, but the results go into
+    // globals since print can't be called from the VM until step 85
+    VM vm;
+    run_source(vm,
+               "fn make_counter() {\n"
+               "  let count = 0\n"
+               "  fn tick() {\n"
+               "    count = count + 1\n"
+               "    return count\n"
+               "  }\n"
+               "  return tick\n"
+               "}\n"
+               "let a = make_counter()\n"
+               "let b = make_counter()\n"
+               "let r1 = a()\n"
+               "let r2 = a()\n"
+               "let r3 = a()\n"
+               "let r4 = b()");
+    REQUIRE(std::get<int64_t>(*vm.global("r1")) == 1);
+    REQUIRE(std::get<int64_t>(*vm.global("r2")) == 2);
+    REQUIRE(std::get<int64_t>(*vm.global("r3")) == 3);
+    REQUIRE(std::get<int64_t>(*vm.global("r4")) == 1);
+    REQUIRE(vm.stack_size() == 0);
+    REQUIRE(vm.open_upvalue_count() == 0);
+}
+
+TEST_CASE("two closures over one variable share it after it closes", "[compiler]") {
+    // if each closure got its own Upvalue the inc calls would never show up in
+    // get and out would be 0
+    VM vm;
+    run_source(vm,
+               "let inc = nil\n"
+               "let get = nil\n"
+               "fn make() {\n"
+               "  let n = 0\n"
+               "  fn i() { n = n + 1 }\n"
+               "  fn g() { return n }\n"
+               "  inc = i\n"
+               "  get = g\n"
+               "}\n"
+               "make()\n"
+               "inc()\n"
+               "inc()\n"
+               "let out = get()");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 2);
+}
+
+TEST_CASE("a closure writes through to the local while it's still open", "[compiler]") {
+    VM vm;
+    run_source(vm,
+               "fn f() {\n"
+               "  let x = 1\n"
+               "  fn set() { x = 5 }\n"
+               "  set()\n"
+               "  return x\n"
+               "}\n"
+               "let out = f()");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 5);
+}
+
+TEST_CASE("a closure reaches a variable two fns out", "[compiler]") {
+    VM vm;
+    run_source(vm,
+               "fn outer() {\n"
+               "  let x = 10\n"
+               "  fn mid() {\n"
+               "    fn inner() { return x + 1 }\n"
+               "    return inner\n"
+               "  }\n"
+               "  return mid()\n"
+               "}\n"
+               "let out = outer()()");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 11);
+}
+
+TEST_CASE("a block at the top level closes what it captured", "[compiler]") {
+    VM vm;
+    run_source(vm, "let get = nil\n{ let x = 3 fn g() { return x } get = g }\nlet out = get()");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 3);
+    REQUIRE(vm.stack_size() == 0);
+    REQUIRE(vm.open_upvalue_count() == 0);
+}
+
+TEST_CASE("each loop pass captures its own copy of a body local", "[compiler]") {
+    // j is a new local every pass and gets closed at the end of the body, so
+    // the two closures must not end up looking at the same slot
+    VM vm;
+    run_source(vm,
+               "let a = nil\n"
+               "let b = nil\n"
+               "let i = 0\n"
+               "while i < 2 {\n"
+               "  let j = i\n"
+               "  fn g() { return j }\n"
+               "  if i == 0 { a = g } else { b = g }\n"
+               "  i = i + 1\n"
+               "}\n"
+               "let ra = a()\n"
+               "let rb = b()");
+    REQUIRE(std::get<int64_t>(*vm.global("ra")) == 0);
+    REQUIRE(std::get<int64_t>(*vm.global("rb")) == 1);
+}
+
+TEST_CASE("a fn declared inside a fn can call itself", "[compiler]") {
+    // count isn't a global, so the recursive call only works because the name
+    // was declared before the body compiled and the body captured it
+    VM vm;
+    run_source(vm,
+               "fn outer() {\n"
+               "  fn count(n) { if n == 0 { return 0 } return 1 + count(n - 1) }\n"
+               "  return count(4)\n"
+               "}\n"
+               "let out = outer()");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 4);
+}
+
+TEST_CASE("a closure kept in a global still works on the next run", "[compiler]") {
+    // the repl case. second chunk runs on the same VM after the first one is gone
+    VM vm;
+    run_source(vm,
+               "fn make() { let n = 41 fn g() { n = n + 1 return n } return g }\n"
+               "let g = make()");
+    run_source(vm, "let out = g()");
+    REQUIRE(std::get<int64_t>(*vm.global("out")) == 42);
 }

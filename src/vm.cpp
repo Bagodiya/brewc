@@ -153,6 +153,10 @@ VM::VM() {
 }
 
 InterpretResult VM::run(const Chunk& chunk) {
+    // anything a previous run left open gets its value saved before the stack
+    // it points into is wiped. a closure stored in a global still works on the
+    // next repl line that way.
+    close_upvalues(0);
     stack_.clear();
 
     // a chunk that stopped mid-call left frames behind, and the slots they were
@@ -478,7 +482,7 @@ InterpretResult VM::run(const Chunk& chunk) {
             // 0 under an empty name — nothing is copied or rearranged to set a
             // call up, the stack is already in the right shape.
             const Value& callee = peek(argc);
-            if (!is_compiled_fn(callee)) {
+            if (!is_compiled_fn(callee) && !is_closure(callee)) {
                 // word for word what Interpreter::visit_call says. a value the VM
                 // could call but the tree-walker could not, or the other way
                 // round, would be the two backends disagreeing about the
@@ -486,7 +490,17 @@ InterpretResult VM::run(const Chunk& chunk) {
                 return fail("can only call functions, not " + type_name(callee), *code);
             }
 
-            std::shared_ptr<CompiledFn> fn = std::get<std::shared_ptr<CompiledFn>>(callee);
+            // a closure carries its fn inside it. a plain CompiledFn is what a
+            // fn with no upvalues compiles to, and has no closure to remember.
+            std::shared_ptr<Closure> closure;
+            std::shared_ptr<CompiledFn> fn;
+            if (is_closure(callee)) {
+                closure = std::get<std::shared_ptr<Closure>>(callee);
+                fn = closure->fn;
+            } else {
+                fn = std::get<std::shared_ptr<CompiledFn>>(callee);
+            }
+
             if (static_cast<int>(argc) != fn->arity) {
                 // same wording again, down to the plural being wrong for one
                 // argument. matching the tree-walker matters more than the
@@ -508,7 +522,8 @@ InterpretResult VM::run(const Chunk& chunk) {
             // this instruction, and the line is the one the Call itself was
             // recorded under. ip_ has stepped past both the opcode and its
             // operand by now, so the opcode's own byte is two back.
-            frames_.push_back(CallFrame{fn, ip_, stack_.size() - argc - 1, code->line_at(ip_ - 2)});
+            frames_.push_back(CallFrame{fn, closure, ip_, stack_.size() - argc - 1,
+                                        code->line_at(ip_ - 2)});
 
             // from here the loop is reading someone else's chunk. nothing is
             // saved about this one beyond the frame above, since the callee's
@@ -532,6 +547,11 @@ InterpretResult VM::run(const Chunk& chunk) {
             CallFrame frame = std::move(frames_.back());
             frames_.pop_back();
 
+            // any local of this frame a closure grabbed has to be copied out
+            // before the resize throws the slot away. this is the case
+            // closure_counter hits: count dies with make_counter's frame but
+            // tick still needs it.
+            close_upvalues(frame.slot_base);
             stack_.resize(frame.slot_base);
             push(std::move(result));
 
@@ -541,6 +561,73 @@ InterpretResult VM::run(const Chunk& chunk) {
             ip_ = frame.return_ip;
             break;
         }
+
+        case Opcode::Closure: {
+            std::size_t index = read_byte(*code);
+            const Value& constant = code->constant_at(index);
+            if (!is_compiled_fn(constant)) {
+                return fail("closure operand is not a function", *code);
+            }
+
+            auto closure = std::make_shared<Closure>();
+            closure->fn = std::get<std::shared_ptr<CompiledFn>>(constant);
+
+            // pushed before capturing, so a local fn that refers to itself can
+            // capture the slot it's sitting in.
+            push(Value{closure});
+
+            for (int i = 0; i < closure->fn->upvalue_count; ++i) {
+                uint8_t is_local = read_byte(*code);
+                std::size_t up_index = read_byte(*code);
+
+                if (is_local) {
+                    std::size_t slot = frame_base() + up_index;
+                    if (slot >= stack_.size()) {
+                        return fail("captured slot " + std::to_string(up_index) +
+                                        " is out of range",
+                                    *code);
+                    }
+                    closure->upvalues.push_back(capture_upvalue(slot));
+                } else {
+                    // passed down from the closure we're running in
+                    if (frames_.empty() || !frames_.back().closure ||
+                        up_index >= frames_.back().closure->upvalues.size()) {
+                        return fail("upvalue " + std::to_string(up_index) + " is out of range",
+                                    *code);
+                    }
+                    closure->upvalues.push_back(frames_.back().closure->upvalues[up_index]);
+                }
+            }
+            break;
+        }
+
+        case Opcode::GetUpvalue:
+        case Opcode::SetUpvalue: {
+            std::size_t index = read_byte(*code);
+            if (frames_.empty() || !frames_.back().closure ||
+                index >= frames_.back().closure->upvalues.size()) {
+                // only a hand-built chunk gets here, the compiler never emits
+                // these outside a fn that has the upvalue
+                return fail("upvalue " + std::to_string(index) + " is out of range", *code);
+            }
+
+            Upvalue& upvalue = *frames_.back().closure->upvalues[index];
+            if (op == Opcode::GetUpvalue) {
+                push(upvalue_value(upvalue));
+            } else {
+                // peek like SetLocal, assignment leaves its value behind
+                upvalue_value(upvalue) = peek(0);
+            }
+            break;
+        }
+
+        case Opcode::CloseUpvalue:
+            // the local on top is going out of scope and something captured it
+            if (!stack_.empty()) {
+                close_upvalues(stack_.size() - 1);
+            }
+            pop();
+            break;
 
         default:
             // not an opcode at all — every one in the enum has a case above now.
@@ -588,6 +675,9 @@ InterpretResult VM::fail(const std::string& message, const Chunk& chunk) {
     // format_error prints that as no stack section at all.
     error_ = RuntimeError(message, chunk.line_at(offset), 0, call_trace());
 
+    // closures that escaped into a global keep whatever value they last saw
+    close_upvalues(0);
+
     // drop whatever the half-finished expression had pushed, and the frames it
     // was pushed inside. the repl keeps one VM for the whole session, so leaving
     // either behind would put the next line's operands on top of junk and run it
@@ -598,6 +688,43 @@ InterpretResult VM::fail(const std::string& message, const Chunk& chunk) {
 }
 
 std::size_t VM::frame_depth() const { return frames_.size(); }
+
+std::size_t VM::open_upvalue_count() const { return open_upvalues_.size(); }
+
+std::shared_ptr<Upvalue> VM::capture_upvalue(std::size_t slot) {
+    // the list is sorted by slot, so walk until we reach or pass it
+    auto it = open_upvalues_.begin();
+    while (it != open_upvalues_.end() && (*it)->slot < slot) {
+        ++it;
+    }
+    if (it != open_upvalues_.end() && (*it)->slot == slot) {
+        return *it;
+    }
+
+    auto upvalue = std::make_shared<Upvalue>();
+    upvalue->slot = slot;
+    open_upvalues_.insert(it, upvalue);
+    return upvalue;
+}
+
+void VM::close_upvalues(std::size_t from_slot) {
+    while (!open_upvalues_.empty() && open_upvalues_.back()->slot >= from_slot) {
+        Upvalue& upvalue = *open_upvalues_.back();
+        if (upvalue.slot < stack_.size()) {
+            upvalue.closed = stack_[upvalue.slot];
+        }
+        upvalue.open = false;
+        open_upvalues_.pop_back();
+    }
+}
+
+Value& VM::upvalue_value(Upvalue& upvalue) {
+    // the slot check is for hand-built chunks that Pop a captured local
+    // without closing it. falls back to the closed copy instead of reading
+    // off the end of the stack.
+    if (upvalue.open && upvalue.slot < stack_.size()) return stack_[upvalue.slot];
+    return upvalue.closed;
+}
 
 std::size_t VM::frame_base() const {
     // the top level is not a frame, so its locals are counted from the bottom of

@@ -50,6 +50,9 @@ struct NativeFn;
 // it holds a Chunk by value and chunk.h already needs this file for the pool.
 struct CompiledFn;
 
+// a CompiledFn plus the outer variables it captured. also lives in chunk.h.
+struct Closure;
+
 // the runtime representation of a value while a program is actually running.
 // everything so far has been tokens and AST nodes; this is the first type that
 // holds a real evaluated result. ints are 64-bit, floats are plain doubles, and
@@ -58,9 +61,11 @@ struct CompiledFn;
 // that keeps NativeFn an incomplete type here (its callback mentions Value, which
 // isn't finished yet) and dodges the size cycle that a by-value member would make.
 // compiled functions go behind a shared_ptr for the same reason, and it also means
-// copying one around the VM stack doesn't copy its whole chunk.
+// copying one around the VM stack doesn't copy its whole chunk. closures too, and
+// there it matters more: two copies of a closure have to be the same closure.
 using Value = std::variant<Nil, int64_t, double, bool, std::string, Function,
-                           std::shared_ptr<NativeFn>, std::shared_ptr<CompiledFn>>;
+                           std::shared_ptr<NativeFn>, std::shared_ptr<CompiledFn>,
+                           std::shared_ptr<Closure>>;
 
 // now that Value is a complete type we can spell out the builtin. name is only for
 // printing and error messages; call is the actual C++ that runs when brew code
@@ -81,6 +86,7 @@ bool is_string(const Value& value);
 bool is_function(const Value& value);
 bool is_native(const Value& value);
 bool is_compiled_fn(const Value& value);
+bool is_closure(const Value& value);
 
 // the value's type as a word, mostly for error messages ("expected int, got
 // string").

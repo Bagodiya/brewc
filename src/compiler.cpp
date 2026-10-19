@@ -171,6 +171,7 @@ std::shared_ptr<CompiledFn> Compiler::compile_function(FnDecl& decl) {
     fn->chunk = std::move(chunk_);
     fn->arity = static_cast<int>(decl.params.size());
     fn->name = decl.name;
+    fn->upvalue_count = static_cast<int>(upvalues_.size());
     return fn;
 }
 
@@ -185,6 +186,7 @@ void Compiler::reset() {
     // gave up, and starting the next program at depth 2 with someone else's
     // locals still listed would resolve names to slots that hold nothing.
     locals_.clear();
+    upvalues_.clear();
     scope_depth_ = 0;
     in_function_ = false;
 }
@@ -294,8 +296,11 @@ void Compiler::end_scope() {
     //
     // popping from the back is the only order that works, since the innermost
     // local is the one on top.
+    //
+    // a captured local can't just be popped, a closure still needs it after the
+    // block is gone. CloseUpvalue copies it into the upvalue first.
     while (!locals_.empty() && locals_.back().depth > scope_depth_) {
-        emit(Opcode::Pop);
+        emit(locals_.back().captured ? Opcode::CloseUpvalue : Opcode::Pop);
         locals_.pop_back();
     }
 }
@@ -320,6 +325,43 @@ int Compiler::resolve_local(const std::string& name) const {
         }
     }
     return -1;
+}
+
+int Compiler::resolve_upvalue(const std::string& name, const Token& where) {
+    if (enclosing_ == nullptr) return -1;
+
+    int local = enclosing_->resolve_local(name);
+    if (local >= 0) {
+        enclosing_->locals_[static_cast<std::size_t>(local)].captured = true;
+        return add_upvalue(static_cast<uint8_t>(local), true, where);
+    }
+
+    // not a local one level out, but maybe further out. if so the fn in
+    // between captures it too and we take it from that fn's upvalues.
+    int upvalue = enclosing_->resolve_upvalue(name, where);
+    if (upvalue >= 0) {
+        return add_upvalue(static_cast<uint8_t>(upvalue), false, where);
+    }
+
+    return -1;
+}
+
+int Compiler::add_upvalue(uint8_t index, bool is_local, const Token& where) {
+    for (std::size_t i = 0; i < upvalues_.size(); ++i) {
+        if (upvalues_[i].index == index && upvalues_[i].is_local == is_local) {
+            return static_cast<int>(i);
+        }
+    }
+
+    // operand of GetUpvalue is one byte, same limit as locals
+    if (upvalues_.size() >= max_locals) {
+        fail("too many captured variables in one function (max " + std::to_string(max_locals) +
+                 ")",
+             where);
+    }
+
+    upvalues_.push_back(UpvalueRef{index, is_local});
+    return static_cast<int>(upvalues_.size() - 1);
 }
 
 void Compiler::fail(const std::string& message, const Token& where) {
@@ -554,6 +596,14 @@ void Compiler::visit_identifier(IdentifierExpr& expr) {
         return;
     }
 
+    // a local of some fn we're nested in. checked before globals for the same
+    // reason locals are.
+    int upvalue = resolve_upvalue(expr.name, expr.token);
+    if (upvalue >= 0) {
+        emit(Opcode::GetUpvalue, static_cast<uint8_t>(upvalue));
+        return;
+    }
+
     emit(Opcode::GetGlobal, name_constant(expr.name, expr.token));
 }
 
@@ -584,6 +634,12 @@ void Compiler::visit_assign(AssignExpr& expr) {
     int slot = resolve_local(expr.name);
     if (slot >= 0) {
         emit(Opcode::SetLocal, static_cast<uint8_t>(slot));
+        return;
+    }
+
+    int upvalue = resolve_upvalue(expr.name, expr.token);
+    if (upvalue >= 0) {
+        emit(Opcode::SetUpvalue, static_cast<uint8_t>(upvalue));
         return;
     }
 
@@ -775,15 +831,43 @@ void Compiler::visit_while(WhileStmt& stmt) {
 //
 // nothing in the body runs here. the Const just pushes the function value, the
 // code inside waits until something calls it.
+//
+// if the body used any outer locals it gets a Closure instead of a Const, with
+// one (is_local, index) pair per upvalue so the VM knows what to capture. a fn
+// that captures nothing stays a plain Const, no point allocating a Closure for it.
+//
+// inside a block the name is declared as a local *before* the body is compiled,
+// so a nested fn can call itself (it captures its own slot). the slot is the one
+// the Const/Closure is about to push into. at the top level it's a global and
+// recursion already works through GetGlobal.
 void Compiler::visit_fn(FnDecl& stmt) {
+    bool is_local = scope_depth_ > 0;
+    if (is_local) {
+        add_local(stmt.name, stmt.name_token);
+    }
+
     Compiler body;
+    body.enclosing_ = this;
     std::shared_ptr<CompiledFn> fn = body.compile_function(stmt);
 
     set_line(stmt.name_token);
-    emit_constant(Value{std::move(fn)}, stmt.name_token);
+    if (body.upvalues_.empty()) {
+        emit_constant(Value{std::move(fn)}, stmt.name_token);
+    } else {
+        std::size_t index = chunk_.add_constant(Value{std::move(fn)});
+        if (index >= Chunk::max_constants) {
+            fail("too many constants in one chunk (max " +
+                     std::to_string(Chunk::max_constants) + ")",
+                 stmt.name_token);
+        }
+        emit(Opcode::Closure, static_cast<uint8_t>(index));
+        for (const UpvalueRef& up : body.upvalues_) {
+            emit_byte(up.is_local ? 1 : 0);
+            emit_byte(up.index);
+        }
+    }
 
-    if (scope_depth_ > 0) {
-        add_local(stmt.name, stmt.name_token);
+    if (is_local) {
         return;
     }
 

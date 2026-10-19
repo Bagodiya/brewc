@@ -56,6 +56,10 @@ std::string opcode_name(Opcode op) {
     case Opcode::Loop: return "Loop";
     case Opcode::Call: return "Call";
     case Opcode::Return: return "Return";
+    case Opcode::Closure: return "Closure";
+    case Opcode::GetUpvalue: return "GetUpvalue";
+    case Opcode::SetUpvalue: return "SetUpvalue";
+    case Opcode::CloseUpvalue: return "CloseUpvalue";
     }
 
     // no default label above, so -Wswitch complains the moment a new opcode is

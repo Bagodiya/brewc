@@ -47,8 +47,8 @@ private:
 // value is on the stack afterwards.
 //
 // literals, arithmetic, comparisons, logical operators, variables, assignment,
-// blocks, expression statements, if/else, while loops, fn declarations and calls
-// are wired up so far. return is the last stub and gets filled in next step.
+// blocks, expression statements, if/else, while loops, fn declarations, calls,
+// return and closures over outer locals are all wired up.
 class Compiler : public Visitor, public StmtVisitor {
 public:
     Compiler();
@@ -89,9 +89,8 @@ private:
     // second Compiler rather than on itself, so the body's locals and chunk don't
     // get mixed in with whatever the outer code was in the middle of.
     //
-    // no enclosing pointer yet. nothing needs to look outward until upvalues in
-    // step 84, and a body that names an outer local just falls through to a
-    // global lookup for now.
+    // the second Compiler has enclosing_ pointing back at this one, so a name
+    // the body doesn't declare itself can be found in the fn around it.
     std::shared_ptr<CompiledFn> compile_function(FnDecl& decl);
 
     // start a fresh chunk. compile() and compile_expression() both call this
@@ -175,6 +174,16 @@ private:
     // read the wrong variable.
     int resolve_local(const std::string& name) const;
 
+    // which upvalue a name means, or -1 if no fn around this one has it as a
+    // local either. looks in the enclosing compiler's locals first, then asks
+    // that compiler to look further out, so a fn nested three deep gets the
+    // variable passed down one level at a time.
+    int resolve_upvalue(const std::string& name, const Token& where);
+
+    // add an upvalue to this fn, or return the one already there for the same
+    // variable. two uses of `count` in one body must be one upvalue.
+    int add_upvalue(uint8_t index, bool is_local, const Token& where);
+
     // put a variable's name in the pool and hand back the index, without emitting
     // anything. globals are addressed by name rather than by slot, so the three
     // global opcodes all need this index as their operand — but each of them
@@ -202,9 +211,20 @@ private:
     // a local the compiler is keeping track of while it walks a block. name is
     // what the source called it and depth is the scope it was declared in, which
     // is all end_scope needs to decide what has gone out of scope.
+    // captured is set when some inner fn uses it as an upvalue. end_scope then
+    // emits CloseUpvalue for it instead of a plain Pop.
     struct Local {
         std::string name;
         int depth;
+        bool captured = false;
+    };
+
+    // what goes after the Closure instruction for each upvalue. is_local means
+    // index is a slot in the enclosing fn's frame, otherwise it's one of the
+    // enclosing fn's own upvalues.
+    struct UpvalueRef {
+        uint8_t index;
+        bool is_local;
     };
 
     // a slot number is one byte, so 255 is the last one an instruction can name.
@@ -222,6 +242,14 @@ private:
     // every statement leaves the stack the way it found it, so nothing else is
     // ever parked below a local while the block is being compiled.
     std::vector<Local> locals_;
+
+    // the outer variables this fn body uses, in the order the Closure
+    // instruction lists them. GetUpvalue's operand is an index into this.
+    std::vector<UpvalueRef> upvalues_;
+
+    // the compiler for the fn this one is nested in, or null at the top level.
+    // not touched by reset(), visit_fn sets it before compile_function runs.
+    Compiler* enclosing_ = nullptr;
 
     // how many blocks deep we are. 0 is the top level, where a `let` is a global
     // instead, since a name written there has to still be reachable from a
