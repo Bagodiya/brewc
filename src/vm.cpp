@@ -1,5 +1,6 @@
 #include "brewc/vm.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -8,6 +9,7 @@
 #include <variant>
 #include <vector>
 
+#include "brewc/builtins.h"
 #include "brewc/value_ops.h"
 
 namespace brewc {
@@ -150,6 +152,10 @@ VM::VM() {
     // expression in the test programs" rather than a limit — pushing past it
     // still works, it just pays for the growth.
     stack_.reserve(256);
+
+    for (const auto& native : builtins()) {
+        globals_[native->name] = native;
+    }
 }
 
 InterpretResult VM::run(const Chunk& chunk) {
@@ -482,6 +488,19 @@ InterpretResult VM::run(const Chunk& chunk) {
             // 0 under an empty name — nothing is copied or rearranged to set a
             // call up, the stack is already in the right shape.
             const Value& callee = peek(argc);
+
+            // natives get no frame, there's no chunk to run. copy the args out,
+            // drop callee + args, push the result in the callee's spot.
+            if (is_native(callee)) {
+                auto native = std::get<std::shared_ptr<NativeFn>>(callee);
+                std::size_t base = stack_.size() - argc - 1;
+                std::vector<Value> args(stack_.begin() + static_cast<std::ptrdiff_t>(base + 1),
+                                        stack_.end());
+                stack_.resize(base);
+                push(native->call(args));
+                break;
+            }
+
             if (!is_compiled_fn(callee) && !is_closure(callee)) {
                 // word for word what Interpreter::visit_call says. a value the VM
                 // could call but the tree-walker could not, or the other way

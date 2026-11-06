@@ -1,50 +1,18 @@
 #include "brewc/interpreter.h"
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "brewc/builtins.h"
 #include "brewc/value_ops.h"
 
 namespace brewc {
 
 namespace {
-
-// the print builtin. walk the arguments left to right and write each one out with
-// to_string, which already knows how to render every Value variant, so this works
-// on ints, floats, bools, strings, nil and even functions without any extra work
-// here. multiple arguments are separated by a single space and the whole line ends
-// with a newline. there's nothing useful to return, so a call to print comes back
-// as nil like any other side-effecting statement.
-Value builtin_print(const std::vector<Value>& args) {
-    for (std::size_t i = 0; i < args.size(); ++i) {
-        if (i != 0) {
-            std::cout << ' ';
-        }
-        std::cout << to_string(args[i]);
-    }
-    std::cout << '\n';
-    return Nil{};
-}
-
-// clock() hands back a number of seconds so a program can time itself: grab it
-// once before the work and once after, then subtract. steady_clock is the right
-// pick here because it never jumps around the way the wall clock can when the
-// system time gets adjusted, so a difference between two readings is always a
-// real elapsed duration. the zero point is arbitrary, but that doesn't matter
-// since only the gap between two calls is ever meaningful. any arguments are
-// ignored — clock doesn't take any.
-Value builtin_clock(const std::vector<Value>& args) {
-    (void)args;
-    auto now = std::chrono::steady_clock::now().time_since_epoch();
-    double seconds = std::chrono::duration<double>(now).count();
-    return seconds;
-}
 
 // how a `return` gets from wherever it was written back out to the call that
 // started the body. it can be nested any number of blocks, ifs and loops deep, so
@@ -69,18 +37,12 @@ Interpreter::Interpreter()
     register_builtins();
 }
 
-// build each builtin value and bind it in the globals so a program can reach them
-// by name without declaring anything. print writes values out; clock is for timing.
+// bind print, clock, ... into the globals. the objects come from builtins()
+// so the vm ends up with the same ones.
 void Interpreter::register_builtins() {
-    auto print = std::make_shared<NativeFn>();
-    print->name = "print";
-    print->call = builtin_print;
-    globals_->define("print", print);
-
-    auto clock = std::make_shared<NativeFn>();
-    clock->name = "clock";
-    clock->call = builtin_clock;
-    globals_->define("clock", clock);
+    for (const auto& native : builtins()) {
+        globals_->define(native->name, native);
+    }
 }
 
 void Interpreter::interpret(std::vector<std::unique_ptr<Stmt>>& program) {

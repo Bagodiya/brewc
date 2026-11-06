@@ -10,6 +10,7 @@
 #include <variant>
 #include <vector>
 
+#include "brewc/builtins.h"
 #include "brewc/chunk.h"
 #include "brewc/runtime_error.h"
 #include "brewc/value.h"
@@ -1861,4 +1862,45 @@ TEST_CASE("two Closures over the same slot share one upvalue", "[vm]") {
     auto second = std::get<std::shared_ptr<Closure>>(vm.stack_top());
     REQUIRE(second->upvalues.size() == 1);
     REQUIRE(second->upvalues[0]->open);
+}
+
+TEST_CASE("the vm starts with the shared builtins in its globals", "[vm]") {
+    VM vm;
+    for (const auto& native : builtins()) {
+        const Value* v = vm.global(native->name);
+        REQUIRE(v != nullptr);
+        REQUIRE(is_native(*v));
+        // same object the interpreter gets, not a second copy
+        REQUIRE(std::get<std::shared_ptr<NativeFn>>(*v) == native);
+    }
+}
+
+TEST_CASE("Call on a native pushes its result and no frame", "[vm]") {
+    int calls = 0;
+    std::size_t seen = 0;
+    auto add = std::make_shared<NativeFn>();
+    add->name = "add";
+    add->call = [&](const std::vector<Value>& args) -> Value {
+        ++calls;
+        seen = args.size();
+        return std::get<int64_t>(args[0]) + std::get<int64_t>(args[1]);
+    };
+
+    Chunk chunk;
+    write_constant(chunk, int64_t{99});
+    write_constant(chunk, Value{add});
+    write_constant(chunk, int64_t{3});
+    write_constant(chunk, int64_t{4});
+    chunk.write(Opcode::Call, 1);
+    chunk.write(static_cast<uint8_t>(2), 1);
+    chunk.write(Opcode::Return, 1);
+
+    VM vm;
+    REQUIRE(vm.run(chunk) == InterpretResult::Ok);
+    REQUIRE(calls == 1);
+    REQUIRE(seen == 2);
+    REQUIRE(vm.frame_depth() == 0);
+    // the 99 underneath is untouched, the result replaced fn + args
+    REQUIRE(vm.stack_size() == 2);
+    REQUIRE(std::get<int64_t>(vm.stack_top()) == 7);
 }

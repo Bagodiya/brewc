@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <variant>
 #include <vector>
@@ -11,6 +13,7 @@
 #include "brewc/chunk.h"
 #include "brewc/compiler.h"
 #include "brewc/disassembler.h"
+#include "brewc/interpreter.h"
 #include "brewc/lexer.h"
 #include "brewc/parser.h"
 #include "brewc/token.h"
@@ -128,6 +131,33 @@ std::shared_ptr<CompiledFn> fn_at(const Chunk& chunk, std::size_t offset) {
     const Value& value = chunk.constant_at(chunk.code[offset + 1]);
     REQUIRE(is_compiled_fn(value));
     return std::get<std::shared_ptr<CompiledFn>>(value);
+}
+
+// whatever print wrote to cout while f ran
+template <typename F>
+std::string grab_stdout(F f) {
+    std::ostringstream sink;
+    std::streambuf* old = std::cout.rdbuf(sink.rdbuf());
+    try {
+        f();
+    } catch (...) {
+        std::cout.rdbuf(old);
+        throw;
+    }
+    std::cout.rdbuf(old);
+    return sink.str();
+}
+
+std::string vm_output(const std::string& source) {
+    Chunk chunk = compile_source(source);
+    VM vm;
+    return grab_stdout([&] { REQUIRE(vm.run(chunk) == InterpretResult::Ok); });
+}
+
+std::string interp_output(const std::string& source) {
+    std::vector<std::unique_ptr<Stmt>> program = parse_program(source);
+    Interpreter interp;
+    return grab_stdout([&] { interp.interpret(program); });
 }
 
 } // namespace
@@ -1971,4 +2001,44 @@ TEST_CASE("a closure kept in a global still works on the next run", "[compiler]"
                "let g = make()");
     run_source(vm, "let out = g()");
     REQUIRE(std::get<int64_t>(*vm.global("out")) == 42);
+}
+
+TEST_CASE("print on the vm matches the interpreter", "[compiler]") {
+    std::string src = "print(1, \"a\", true)";
+    REQUIRE(vm_output(src) == "1 a true\n");
+    REQUIRE(vm_output(src) == interp_output(src));
+}
+
+TEST_CASE("print with mixed values matches the interpreter", "[compiler]") {
+    std::string src = "print()\nprint(nil, 2.0, 7 / 2, \"x\" + \"y\")\nlet r = print(false)\nprint(r)";
+    REQUIRE(vm_output(src) == interp_output(src));
+    REQUIRE(vm_output(src) == "\nnil 2.0 3 xy\nfalse\nnil\n");
+}
+
+TEST_CASE("print called from inside a compiled fn", "[compiler]") {
+    std::string src = "fn show(x) { print(x, x + 1) }\nshow(2)\nshow(10)";
+    REQUIRE(vm_output(src) == "2 3\n10 11\n");
+}
+
+TEST_CASE("print called from a closure", "[compiler]") {
+    std::string src =
+        "fn make() { let n = 0 fn tick() { n = n + 1 print(n) } return tick }\n"
+        "let t = make()\nt()\nt()";
+    REQUIRE(vm_output(src) == "1\n2\n");
+    REQUIRE(vm_output(src) == interp_output(src));
+}
+
+TEST_CASE("clock returns a float on the vm", "[compiler]") {
+    VM vm;
+    run_source(vm, "let a = clock()\nlet b = clock()\nlet d = b - a");
+    REQUIRE(is_float(*vm.global("a")));
+    REQUIRE(is_float(*vm.global("d")));
+    REQUIRE(std::get<double>(*vm.global("d")) >= 0.0);
+}
+
+TEST_CASE("a native call leaves the stack and frames as they were", "[compiler]") {
+    VM vm;
+    grab_stdout([&] { run_source(vm, "print(1, 2, 3)\nclock()"); });
+    REQUIRE(vm.stack_size() == 0);
+    REQUIRE(vm.frame_depth() == 0);
 }

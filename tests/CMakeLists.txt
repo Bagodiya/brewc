@@ -34,6 +34,7 @@ add_executable(brewc_tests
     ${CMAKE_SOURCE_DIR}/src/runtime_error.cpp
     ${CMAKE_SOURCE_DIR}/src/source_snippet.cpp
     ${CMAKE_SOURCE_DIR}/src/interpreter.cpp
+    ${CMAKE_SOURCE_DIR}/src/builtins.cpp
     ${CMAKE_SOURCE_DIR}/src/chunk.cpp
     ${CMAKE_SOURCE_DIR}/src/disassembler.cpp
     ${CMAKE_SOURCE_DIR}/src/compiler.cpp
